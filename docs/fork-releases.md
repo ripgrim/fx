@@ -4,13 +4,26 @@ This fork retains upstream CI, native Linux/macOS test matrices, E2E shards,
 binary-size checks and macOS arm64 PGSO release qualification. Upstream remains
 available through the `upstream` Git remote. `origin` is `ripgrim/fx`.
 
+## Workflow schedule
+
+Binary Size runs automatically on pull requests. CI (including SDK tests),
+Benchmarks, and the standalone PGSO candidate are manual-only. Full CI runs
+automatically on pushes to `main`, or manually on a selected feature branch.
+Before declaring a PR ready, dispatch Full CI for its current branch and wait
+for exact-commit evidence. Feature pushes do not launch duplicate test matrices.
+Bug-report issue templates are unchanged.
+
+Prepare Release remains manual. Release still requires successful main-branch
+Full CI and invokes PGSO qualification itself; neither release gate is removed.
+
 ## Release flow
 
 1. Run **Prepare Release** on `main`, select a version bump and supply Markdown
    release notes. Use the existing format, for example:
    `- **Design verification:** Compare imported designs with their source.`
    An optional `AI_GATEWAY_API_KEY` can draft notes when the input is empty.
-2. Review the generated draft release PR. Full CI must pass for its exact commit.
+2. Review the generated draft release PR and manually run Full CI on its branch.
+   Full CI must pass for its exact commit.
 3. Merge the reviewed release PR. Full CI runs again on `main`.
 4. Successful main-branch Full CI starts **Release**. The release gate independently
    requires that exact current main commit and all four successful platform

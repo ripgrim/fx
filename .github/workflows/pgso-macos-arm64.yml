@@ -3,13 +3,6 @@ name: macOS arm64 PGSO candidate
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - build.zig
-      - scripts/pgso/**
-      - .github/actions/setup-pgso/**
-      - .github/workflows/pgso-macos-arm64.yml
-      - .github/workflows/release.yml
 
 concurrency:
   group: pgso-macos-arm64-${{ github.ref }}

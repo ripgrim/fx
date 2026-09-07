@@ -3,6 +3,11 @@
 For `ripgrim/fx` CI, release credentials and publishing, see
 [Fork releases](docs/fork-releases.md).
 
+On this fork, PR automation runs Binary Size only. Dispatch Full CI manually
+on the feature branch before requesting readiness; it still runs automatically
+on `main` for release qualification. CI, Benchmarks, and standalone PGSO checks
+are available on demand.
+
 ## Scope
 
 `fx` is a CLI-first coding agent written in Zig.

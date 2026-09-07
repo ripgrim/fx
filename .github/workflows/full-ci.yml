@@ -2,9 +2,8 @@ name: Full CI
 
 on:
   workflow_dispatch:
-  pull_request:
   push:
-    branches: ['**']
+    branches: [main]
 
 concurrency:
   group: full-ci-${{ github.ref }}
