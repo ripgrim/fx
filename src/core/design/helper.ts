@@ -249,7 +249,7 @@ export class PaperReader {
     if (!response.ok) throw new Error(`Paper initialization returned HTTP ${response.status}`);
   }
   async read(name: string, args: Json) {
-    if (!["get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
+    if (!["get_selection", "get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
     const result = await this.rpc("tools/call", { name, arguments: args });
     if (result.isError) throw new Error(JSON.stringify(result.content));
     return result;
@@ -592,6 +592,7 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
+  tool("diff", "Compare a linked Paper artboard against its saved source capture without editing Paper or source. Optional target is node:ID, capture:ID, or a linked route.", { session_directory: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
@@ -610,6 +611,17 @@ export const TOOLS = [
 export class Adapter {
   constructor(readonly inspector = new Inspector()) {}
   async close() { await this.inspector.close(); }
+  async compareCapture(store: Store, record: DesignRecord) {
+    if (record.capture_context?.policy !== 3) return { status: "blocked", message: "Recapture the intended page state before comparing." };
+    if (record.operations.some(operation => operation.status !== "applied")) return { status: "blocked", message: "Finish the import before comparing." };
+    const paper = new PaperReader();
+    await paper.initialize();
+    const canvas = await paper.snapshot(record.artboard_id!, record.file_id);
+    const source_image = `data:image/png;base64,${(await readFile(record.screenshot)).toString("base64")}`;
+    const visual = await compareImages(source_image, canvas.image);
+    const inspector = await this.publish(store, record, visual.match ? "verified" : "needs-repair", "Comparison", { source_image, canvas_image: canvas.image, canvas_revision: digest(canvas), visual });
+    return inspector.unavailable ? { status: "blocked", message: "Viewer unavailable." } : { status: "ready", url: inspector.url };
+  }
   private async publish(store: Store, record: DesignRecord, state: VerificationSnapshot["state"], message: string, evidence: Partial<VerificationSnapshot> = {}) {
     const nodes: DesignNode[] = [];
     const walk = (node: DesignNode) => { nodes.push(node); node.children.forEach(walk); };
@@ -634,6 +646,33 @@ export class Adapter {
     const directory = resolve(args.session_directory);
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
+    if (name === "diff") {
+      let records = (await store.list()).filter(record => record.artboard_id);
+      const target = String(args.target ?? "").trim();
+      if (target.startsWith("capture:")) records = records.filter(record => record.id === target.slice(8));
+      else if (target.startsWith("node:")) records = records.filter(record => record.artboard_id === target.slice(5));
+      else if (target) records = records.filter(record => new URL(record.url).pathname === target);
+      else if (records.length) {
+        const paper = new PaperReader();
+        await paper.initialize();
+        const selection = paperObject(await paper.read("get_selection", {}));
+        if (!Array.isArray(selection.selectedNodes)) throw new Error("Paper returned an invalid selection");
+        if (selection.selectedNodes.length > 1) return { status: "blocked", message: "Select one artboard or use /diff capture:ID." };
+        if (selection.selectedNodes.length) {
+          const info = paperObject(await paper.read("get_basic_info", {}));
+          const fileId = typeof info.url === "string" ? new URL(info.url).pathname.split("/")[2] : undefined;
+          if (!fileId) throw new Error("Cannot identify the selected Paper file");
+          records = records.filter(record => record.file_id === fileId && selection.selectedNodes.some((node: Json) => node.id === record.artboard_id));
+        }
+        else records.sort((a, b) => (b.verification?.checked_at ?? "").localeCompare(a.verification?.checked_at ?? ""));
+        if (!selection.selectedNodes.length && records.length > 1 && records[0].verification?.checked_at && records[0].verification.checked_at !== records[1].verification?.checked_at) records = records.slice(0, 1);
+      }
+      if (!records.length) return { status: "blocked", message: "No linked artboard. Select an imported artboard or use /diff capture:ID." };
+      if (records.length !== 1) return { status: "blocked", message: "Choose a capture: " + records.map(record => `/diff capture:${record.id}`).join(" · ") };
+      const record = records[0];
+      if ((await inventory(record.workspace)).revision !== record.source_revision) return { status: "blocked", message: "Source changed. Recapture the intended page state before comparing." };
+      return this.compareCapture(store, record);
+    }
     if (name === "discover") {
       const source = await inventory(args.workspace);
       return { version: VERSION, status: "discovered", workspace: source.root, source_revision: source.revision, files: Object.keys(source.files), tools: TOOLS.map(tool => tool.name) };

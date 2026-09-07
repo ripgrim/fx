@@ -370,6 +370,7 @@ pub fn Handlers(comptime App: type) type {
                 .show_usage = commandShowUsage,
                 .undo_last = commandUndoLast,
                 .handle_mcp = commandHandleMcp,
+                .handle_diff = commandHandleDiff,
                 .handle_skills = commandHandleSkills,
                 .copy_last = commandCopyLast,
                 .submit_feedback = commandSubmitFeedback,
@@ -1293,6 +1294,14 @@ pub fn Handlers(comptime App: type) type {
                 .tone = .neutral,
                 .body = msg,
             }, true);
+        }
+
+        fn commandHandleDiff(ctx: *anyopaque, rest: []const u8) !void {
+            const app: *App = @ptrCast(@alignCast(ctx));
+            if (comptime !@hasDecl(App, "acquireMcpRuntime") or !@hasField(App, "permission_engine")) return error.McpRuntimeUnavailable;
+            @import("../design/diff_command.zig").run(app, rest, app_session_runtime.Runtime(App).activeSessionId(app)) catch {
+                try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Comparison unavailable. Check the capture and MCP connection." }, true);
+            };
         }
 
         fn commandHandleMcp(ctx: *anyopaque, rest: []const u8) !void {

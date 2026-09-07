@@ -15,6 +15,39 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("diff resolves linked targets and refuses ambiguous or unmapped selections", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fx-diff-command-"));
+    const adapter = new Adapter();
+    let selectedNodes: { id: string }[] = [];
+    const initialized = spyOn(PaperReader.prototype, "initialize").mockResolvedValue(undefined);
+    const read = spyOn(PaperReader.prototype, "read").mockImplementation(async name => {
+      if (name === "get_basic_info") return { content: [{ type: "text", text: JSON.stringify({ url: "https://app.paper.design/file/file/page" }) }] };
+      expect(name).toBe("get_selection");
+      return { content: [{ type: "text", text: JSON.stringify({ selectedNodes }) }] };
+    });
+    const calls = spyOn(adapter, "compareCapture").mockResolvedValue({ status: "ready", url: "http://127.0.0.1:1234/a/view" });
+    try {
+      const source = record(directory);
+      source.source_revision = (await inventory(directory)).revision;
+      source.artboard_id = "artboard";
+      source.file_id = "file";
+      await new Store(join(directory, "design")).save(source);
+      // Inventory ignores the generated design evidence only when outside the workspace.
+      const args = { session_directory: directory, target: "node:artboard" };
+      source.workspace = await mkdtemp(join(tmpdir(), "fx-diff-source-"));
+      try {
+        source.source_revision = (await inventory(source.workspace)).revision;
+        await new Store(join(directory, "design")).save(source);
+        expect((await adapter.call("diff", args)).status).toBe("ready");
+        selectedNodes = [{ id: "foreign" }];
+        expect((await adapter.call("diff", { ...args, target: "" })).status).toBe("blocked");
+        selectedNodes = [{ id: "artboard" }, { id: "foreign" }];
+        expect((await adapter.call("diff", { ...args, target: "" })).status).toBe("blocked");
+        selectedNodes = [{ id: "artboard" }];
+        expect((await adapter.call("diff", { ...args, target: "" })).status).toBe("ready");
+      } finally { await rm(source.workspace, { recursive: true }); }
+    } finally { calls.mockRestore(); read.mockRestore(); initialized.mockRestore(); await adapter.close(); await rm(directory, { recursive: true }); }
+  });
   test("legacy captures cannot be admitted as state-consistent imports", async () => {
     const directory = await mkdtemp(join(tmpdir(), "fx-legacy-state-"));
     const adapter = new Adapter();

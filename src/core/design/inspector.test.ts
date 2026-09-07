@@ -140,6 +140,15 @@ test("host checkpoints defer partial imports, verify finished groups and never r
     expect(design.changes.length).toBeGreaterThan(0);
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(design.inspector.auto_open).toBe(false);
+    const beforeDiff = await store.load("capture");
+    const preview = await adapter.compareCapture(store, beforeDiff);
+    expect(preview.status).toBe("ready");
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    const afterDiff = await store.load("capture");
+    expect(afterDiff.phase).toBe(beforeDiff.phase);
+    expect(afterDiff.baseline).toEqual(beforeDiff.baseline);
+    expect(afterDiff.operations).toEqual(beforeDiff.operations);
+    expect(afterDiff.verification?.source_image).toBe("data:image/png;base64,c291cmNl");
     snapshot.mockRejectedValue(new Error("Disconnected"));
     await expect(adapter.call("check", args)).rejects.toThrow("Disconnected");
     expect((await store.load("capture")).verification?.state).toBe("outdated");

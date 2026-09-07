@@ -26,6 +26,36 @@ import {
 
 const MODEL = "openai/gpt-5";
 
+for (const denied of [false, true]) test.skipIf(!tmuxAvailable())("diff command produces a host link without an AI turn" + (denied ? " and honors denies" : ""), async () => {
+  const root = createRoot("diff-command", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const server = JSON.parse(readFileSync(configPath, "utf8")).mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = "design_diff";
+  server.environment.FX_MCP_RAW_RESULT = "1";
+  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify({ status: "ready", url: "http://127.0.0.1:12345/test/view" });
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
+  if (denied) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission: { mcp_fx_design_diff: "deny" } }));
+  gateway = startFakeGateway([fakeGatewayFinalText("Session started.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  await tui.sendText("Start session.");
+  await tui.waitForText("Session started.");
+  const count = gateway.requests.length;
+  await tui.sendText("/diff node:artboard");
+  try { await tui.waitForText(denied ? "restricted" : "Open viewer", 15000); }
+  catch (error) { throw new Error(String(error) + "\n" + readFileSync(stderrPath, "utf8")); }
+  expect(gateway.requests.length).toBe(count);
+  if (!denied) {
+    expect(await tui.capturePane()).toContain("Diff ready");
+    expect(await tui.capturePaneEscapes()).toContain("http://127.0.0.1:12345/test/view");
+  } else expect(await tui.capturePane()).not.toContain("Open viewer");
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 30000);
+
 test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("design capture uses the requested hydrated state through the host", async () => {
   const root = createRoot("state-capture", LEGACY_FIXTURE);
   const browserCache = join(homedir(), ".agent-browser", "browsers");

@@ -267,12 +267,13 @@ function handle(message) {
               : {}),
             type: "object",
             properties: {
+              ...(currentToolName === "design_diff" ? { target: { type: "string" }, session_directory: { type: "string" } } : {}),
               text: {
                 type: "string",
                 ...(draft7Pattern ? { pattern: draft7Pattern } : {}),
               },
             },
-            required: ["text"],
+            required: currentToolName === "design_diff" ? [] : ["text"],
           },
           ...(mode === "draft7_schema"
             ? { execution: { taskSupport: "forbidden" } }
@@ -359,7 +360,7 @@ function handle(message) {
   }
   if (message.method === "tools/call") {
     const progressToken = message.params?._meta?.progressToken;
-    if (!Number.isInteger(progressToken)) process.exit(4);
+    if (currentToolName !== "design_diff" && !Number.isInteger(progressToken)) process.exit(4);
     if (mode === "direct_form") {
       pendingToolCall = message;
       send({

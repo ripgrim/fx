@@ -204,10 +204,30 @@ pub fn latest_inspector_url(entries: anytype) ?[]const u8 {
         const entry = entries[index];
         if (entry != .semantic_notice) continue;
         const notice = entry.semantic_notice;
+        if (std.mem.eql(u8, notice.topic, "diff")) {
+            const prefix = "ready · \x1b]8;;";
+            if (!std.mem.startsWith(u8, notice.body, prefix)) return null;
+            const end = std.mem.findPos(u8, notice.body, prefix.len, "\x1b\\") orelse return null;
+            const url = notice.body[prefix.len..end];
+            if (!validDiffUrl(url)) return null;
+            return url;
+        }
         if (!std.mem.eql(u8, notice.topic, "design verification")) continue;
         return ready_notice_url(notice.body);
     }
     return null;
+}
+
+fn validDiffUrl(url: []const u8) bool {
+    if (!std.mem.startsWith(u8, url, "http://127.0.0.1:") or url.len > 200) return false;
+    for (url) |byte| if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, ":/.-", byte) == null) return false;
+    return true;
+}
+
+/// Caller owns the host-only, terminal-safe clickable command result.
+pub fn diffNotice(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
+    if (!validDiffUrl(url)) return error.InvalidDiffUrl;
+    return std.fmt.allocPrint(alloc, "ready · \x1b]8;;{s}\x1b\\Open viewer ↗\x1b]8;;\x1b\\", .{url});
 }
 
 fn ready_notice_url(body: []const u8) ?[]const u8 {
@@ -310,6 +330,15 @@ test "design host decodes MCP envelopes and rejects tool errors" {
 test "design session identities cannot escape storage" {
     try std.testing.expectError(error.InvalidDesignSession, sessionDirectory(std.testing.allocator, "../outside"));
     try std.testing.expectError(error.DesignSessionRequired, sessionDirectory(std.testing.allocator, ""));
+}
+
+test "diff command links reject remote and terminal-control URLs" {
+    const alloc = std.testing.allocator;
+    const notice = try diffNotice(alloc, "http://127.0.0.1:1234/a/view");
+    defer alloc.free(notice);
+    try std.testing.expect(std.mem.find(u8, notice, "Open viewer ↗") != null);
+    try std.testing.expectError(error.InvalidDiffUrl, diffNotice(alloc, "https://example.com"));
+    try std.testing.expectError(error.InvalidDiffUrl, diffNotice(alloc, "http://127.0.0.1:1234/\x1b[2J"));
 }
 
 test "design inspector notices reject nonlocal and terminal-control URLs" {

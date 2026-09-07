@@ -120,6 +120,8 @@ Inside a saved session, `/permissions remember <allow|deny> <tool-name> <argumen
 
 Stateful design captures use an isolated browser with optional explicit storage and a readiness selector. DOM and screenshot consistency checks reject changing captures before import; they do not inherit your open browser tab's state.
 
+Use `/diff` to compare a linked Paper artboard against its saved capture without an AI turn. The host returns a clickable viewer link. `/diff node:ID`, `/diff capture:ID`, and linked routes select explicit targets; Ctrl+D opens the latest ready comparison.
+
 ## Embed fx
 
 fx builds as a native binary or WebAssembly. Applications embedding fx can provide network transport, session storage, configuration, permission handling, and terminal I/O.

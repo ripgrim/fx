@@ -137,6 +137,18 @@ at most one reminder per turn. A blocked turn may end without claiming fidelity.
 
 ## Diff shortcut
 
+Use `/diff` to compare a linked artboard with its saved source capture, without
+an AI turn or edits to Paper or application code. Select one imported artboard
+in Paper first; with no selection, the most recently verified linked capture
+in the current session is used when unique. Explicit targets are
+`/diff node:ID`, `/diff capture:ID`, or `/diff /route` for a previously linked route.
+Ambiguous targets require an explicit capture. The result is a generic
+`Diff: ready · Open viewer ↗` notice with a clickable link and Ctrl+D support.
+
+This first command version compares linked artboards, not arbitrary child nodes
+or unlinked source components. Changed source requires a fresh state-consistent
+capture. The helper must be connected, and configured MCP restrictions still apply.
+
 When a checkpoint preview is available, the footer shows `Diff ready · ctrl+d to open`.
 Press Ctrl+D to open that checkpoint in your browser without changing your draft.
 Inside the lightbox, scroll or pinch to zoom, and drag or use two fingers to pan.
