@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  symlinkSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { runFx } from "../evals/eval-helpers";
 import { contentText } from "./conditional-guidance-oracle";
@@ -24,6 +25,43 @@ import {
 } from "./tmux-helpers";
 
 const MODEL = "openai/gpt-5";
+
+test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("design capture uses the requested hydrated state through the host", async () => {
+  const root = createRoot("state-capture", LEGACY_FIXTURE);
+  const browserCache = join(homedir(), ".agent-browser", "browsers");
+  if (existsSync(browserCache)) {
+    mkdirSync(join(root.home, ".agent-browser"), { recursive: true });
+    symlinkSync(browserCache, join(root.home, ".agent-browser", "browsers"), "dir");
+  }
+  writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission: { mcp_fx_design_capture_source: "allow" } }));
+  const page = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(`<main>Loading</main><script>setTimeout(()=>{const main=document.querySelector('main');main.id=sessionStorage.getItem('owned')==='true'?'owned':'purchase';main.textContent=main.id==='owned'?'Owned dashboard':'Purchase page'},200)</script>`, { headers: { "Content-Type": "text/html" } }) });
+  try {
+    gateway = startFakeGateway([
+      fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_fx_design_capture_source" }),
+      fakeGatewayToolCall("capture", "mcp_fx_design_capture_source", { workspace: root.workspace, url: `http://127.0.0.1:${page.port}`, selector: "main", ready_selector: "#owned", session_storage: { owned: "true" }, state_label: "Owned dashboard" }),
+      fakeGatewayFinalText("State capture finished."),
+    ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+    const stderrPath = join(root.root, "stderr.log");
+    tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+    await tui.waitForComposer();
+    for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) { await tui.sendKeys("BTab"); await Bun.sleep(300); }
+    await tui.waitForText("DESIGN");
+    await tui.sendText("Capture the owned dashboard state. Do not write to Paper.");
+    await tui.waitForText("State capture finished.", 30_000);
+    const sessions = join(root.home, ".fx", "sessions");
+    const records = readdirSync(sessions, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => {
+      const directory = join(sessions, entry.name, "design");
+      return existsSync(directory) ? readdirSync(directory).filter(name => name.endsWith(".json")).map(name => JSON.parse(readFileSync(join(directory, name), "utf8"))) : [];
+    });
+    if (records.length !== 1) throw new Error(gateway.requests.at(-1)?.body.match(/Browser command failed.{0,1600}/)?.[0] ?? await tui.capturePane());
+    expect(records[0].root.text).toBe("Owned dashboard");
+    expect(records[0].capture_context.policy).toBe(3);
+    await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+    expect(await tui.waitForSessionEnd()).toBe(true);
+    expect(tui.paneStatus().status).toBe(0);
+    expect(readFileSync(stderrPath, "utf8")).toBe("");
+  } finally { page.stop(true); }
+}, 60000);
 
 test.skipIf(!tmuxAvailable())("design completion gate stops after one blocked continuation", async () => {
   const root = createRoot("design-blocked", LEGACY_FIXTURE);

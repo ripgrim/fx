@@ -106,7 +106,22 @@ codebase → editable Paper design → verified codebase workflow.
 - Add deterministic product E2E coverage and its PGSO corpus classification,
   helper CI coverage, and live Paper acceptance against the Comp product demo.
 
-## Diff shortcut
+## Stateful captures
+
+Capture uses a fresh isolated browser, not the user's existing tab. For a
+stateful route, identify the intended screen first. `capture_source` accepts
+`state_label`, `ready_selector`, and explicit string-valued `session_storage`
+and `local_storage` maps. Storage is applied only on the requested origin,
+then the page is reopened. No existing cookies or browser profiles are copied.
+Only a label and fingerprint of the supplied state are saved in capture metadata.
+
+Capture observes DOM mutations and checks matching snapshots around its screenshot,
+retrying at most three times. A quiet interval is not an application-specific
+readiness signal: use `ready_selector` for delayed data or hydration-dependent UI.
+An unstable page is rejected before import. Captures created before these checks
+must be recaptured; they cannot establish import fidelity.
+
+## Managed execution
 
 Managed execution resolves the underlying Paper tool without a separate model
 selection step. Its schema, MCP access scope and exact-action permission checks
@@ -119,6 +134,8 @@ be reconstructed by this recovery path and remain explicitly blocked.
 The completion gate does not force another call after verification has already
 been attempted for the current mutation. If verification was omitted, it supplies
 at most one reminder per turn. A blocked turn may end without claiming fidelity.
+
+## Diff shortcut
 
 When a checkpoint preview is available, the footer shows `Diff ready · ctrl+d to open`.
 Press Ctrl+D to open that checkpoint in your browser without changing your draft.

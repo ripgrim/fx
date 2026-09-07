@@ -7,6 +7,7 @@ import { brotliCompressSync } from "node:zlib";
 import { Adapter, Store, PaperReader, fontFamily, collectTokens, digest, inventory, serialize, threeWay, validateEditTargets, type DesignRecord } from "./helper";
 
 const record = (workspace: string): DesignRecord => ({
+  capture_context: { policy: 3, state_label: "test fixture", state_fingerprint: "fixture" },
   version: 1, id: "capture", workspace, source_revision: "revision", source_files: {},
   url: "http://localhost:3000/demo", selector: "main", viewport: { width: 1440, height: 900 },
   root: { key: "0", name: "Header", tag: "div", text: "A & B", styles: { display: "flex" }, bindings: {}, rect: { x: 0, y: 0, width: 1440, height: 900 }, children: [] },
@@ -14,6 +15,19 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("legacy captures cannot be admitted as state-consistent imports", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fx-legacy-state-"));
+    const adapter = new Adapter();
+    try {
+      const source = record(directory);
+      delete source.capture_context;
+      await new Store(join(directory, "design")).save(source);
+      const result = await adapter.call("prepare_import", { session_directory: directory, capture_id: source.id });
+      expect(result.status).toBe("blocked");
+      expect(result.reason).toBe("capture-state-unverified");
+      expect((await new Store(join(directory, "design")).load(source.id)).operations).toEqual([]);
+    } finally { await adapter.close(); await rm(directory, { recursive: true }); }
+  });
   test("font identity comes from WOFF2 metadata and survives serialization", () => {
     const name = Buffer.from("Evidence Sans", "utf16le").swap16();
     const table = Buffer.alloc(18 + name.length);

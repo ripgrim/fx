@@ -2,7 +2,40 @@ import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Adapter, Store, Browser, captureDocument, serialize } from "./helper";
+import { Adapter, Store, Browser, captureDocument, captureConsistently, serialize } from "./helper";
+
+test("stateful capture prepares storage and waits past hydration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fx-state-capture-"));
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(`<main id="loading">Overview before hydration</main><script>setTimeout(()=>{const owned=sessionStorage.getItem('owned')==='true'; document.querySelector('main').id=owned?'owned':'purchase'; document.querySelector('main').textContent=owned?'Owned dashboard':'Purchase page'},200)</script>`, { headers: { "Content-Type": "text/html" } }) });
+  const adapter = new Adapter();
+  try {
+    const base = { workspace: directory, session_directory: directory, url: `http://127.0.0.1:${server.port}`, selector: "main", width: 600, height: 400 };
+    const fresh = await adapter.call("capture_source", base);
+    const freshRecord = await new Store(join(directory, "design")).load(fresh.capture_id);
+    expect(freshRecord.root.text).toBe("Purchase page");
+    const owned = await adapter.call("capture_source", { ...base, session_storage: { owned: "true" }, ready_selector: "#owned", state_label: "Owned dashboard" });
+    const ownedRecord = await new Store(join(directory, "design")).load(owned.capture_id);
+    expect(ownedRecord.root.text).toBe("Owned dashboard");
+    expect(ownedRecord.capture_context?.state_label).toBe("Owned dashboard");
+    expect(owned.capture_id).not.toBe(fresh.capture_id);
+  } finally { await adapter.close(); server.stop(true); await rm(directory, { recursive: true }); }
+}, 120000);
+
+test("capture rejects a DOM that changes across every screenshot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fx-unstable-capture-"));
+  const browser = new Browser(`fx-unstable-${crypto.randomUUID()}`);
+  try {
+    await browser.call("open", "about:blank");
+    await browser.evaluate("document.body.innerHTML='<main>State 0</main>'");
+    let screenshots = 0;
+    const changing = { evaluate: (script: string) => browser.evaluate(script), call: async (...args: string[]) => {
+      if (args[0] === "screenshot") await browser.evaluate(`document.querySelector('main').textContent='State ${++screenshots}'`);
+      return browser.call(...args);
+    } };
+    await expect(captureConsistently(changing, "main", join(directory, "capture.png"))).rejects.toThrow("Capture changed during import");
+    expect(screenshots).toBe(3);
+  } finally { await browser.call("close").catch(() => undefined); await rm(directory, { recursive: true }); }
+}, 120000);
 
 test("generated avatar rings and before/after decorations survive as pixel-identical editable boxes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fx-design-pseudo-"));

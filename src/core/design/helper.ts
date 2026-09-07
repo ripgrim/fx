@@ -1,6 +1,6 @@
 /** fx's managed design adapter. Paper mutations are executed by fx, never here. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, readdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, readdir, realpath, rm } from "node:fs/promises";
 import { resolve, relative, join, isAbsolute } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -32,6 +32,7 @@ export interface DesignNode {
   children: DesignNode[];
 }
 export interface DesignRecord {
+  capture_context?: { policy: number; state_label: string; state_fingerprint: string; ready_selector?: string };
   version: number;
   id: string;
   workspace: string;
@@ -337,9 +338,12 @@ export async function captureDocument(selector: string) {
   // This document belongs to the disposable capture browser, not the user's tab.
   // Keep the stylesheet active through the screenshot, including late-mounted hosts.
   // Never exclude generic portals or iframes: those can be real product content.
-  const capture_style = document.createElement("style");
-  capture_style.textContent = "nextjs-portal { display: none !important; }";
-  document.head.append(capture_style);
+  if (!document.querySelector('style[data-fx-capture]')) {
+    const capture_style = document.createElement("style");
+    capture_style.dataset.fxCapture = "true";
+    capture_style.textContent = "nextjs-portal { display: none !important; }";
+    document.head.append(capture_style);
+  }
   await document.fonts.ready;
   const roots = document.querySelectorAll(selector);
   if (roots.length !== 1) throw new Error(`Expected one page surface, found ${roots.length}`);
@@ -554,11 +558,42 @@ export function threeWay(base: Json, canvas: Json, source: Json) {
   return { changes: design, conflicts };
 }
 
+/** Reject mixed-time evidence instead of turning it into a visual regression. */
+export async function captureConsistently(browser: Pick<Browser, "evaluate" | "call">, selector: string, screenshot: string) {
+  // Warm fonts/assets and install capture-only overlay suppression before observing.
+  await browser.evaluate(`(${captureDocument.toString()})(${JSON.stringify(selector)})`);
+  await browser.evaluate(`(() => {
+    const guard = { epoch: 0 };
+    const observer = new MutationObserver(records => {
+      if (records.some(record => {
+        const target = record.target instanceof Element ? record.target : record.target.parentElement;
+        if (target?.closest('nextjs-portal')) return false;
+        const nodes = [...record.addedNodes, ...record.removedNodes];
+        return !(record.type === 'childList' && nodes.length && nodes.every(node => node instanceof Element && node.matches('nextjs-portal')));
+      })) guard.epoch++;
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+    window.__fxCaptureGuard = guard;
+    return true;
+  })()`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await browser.evaluate("new Promise(resolve => setTimeout(resolve, 500))");
+    const epoch = await browser.evaluate("window.__fxCaptureGuard.epoch");
+    const before = await browser.evaluate(`(${captureDocument.toString()})(${JSON.stringify(selector)})`);
+    await browser.evaluate("new Promise(resolve => setTimeout(resolve, 300))");
+    await browser.call("screenshot", selector, screenshot);
+    const after = await browser.evaluate(`(${captureDocument.toString()})(${JSON.stringify(selector)})`);
+    const finalEpoch = await browser.evaluate("window.__fxCaptureGuard.epoch");
+    if (epoch === finalEpoch && digest(before) === digest(after)) return before;
+  }
+  throw new Error("Capture changed during import. Wait for a stable page state or supply ready_selector; no import was prepared.");
+}
+
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
-  tool("capture_source", "Capture a rendered page including its shell. Stores exact assets and measured styles; unsupported features are explicit findings.", { workspace: string, session_directory: string, url: string, selector: string, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
+  tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
   tool("prepare_import", "Prepare a captured page import. Call execute with each pending operation hash; fx sends the stored payload and records the real result.", { session_directory: string, capture_id: string, file_id: string }, ["session_directory", "capture_id"], false),
   tool("execute", "Execute one prepared operation by capture ID and operation hash. fx validates and authorizes its exact underlying Paper action. Inspect after each operation to discover the next step.", { session_directory: string, capture_id: string, operation_hash: string }, ["capture_id", "operation_hash"], false),
@@ -613,7 +648,29 @@ export class Adapter {
       try {
         await browser.call("open", url.href);
         await browser.call("set", "viewport", String(viewport.width), String(viewport.height));
-        const snapshot = await browser.evaluate(`(${captureDocument.toString()})(${JSON.stringify(args.selector)})`);
+        if (args.session_storage || args.local_storage) {
+          for (const values of [args.session_storage, args.local_storage]) if (values && (typeof values !== "object" || Array.isArray(values) || Object.values(values).some(value => typeof value !== "string"))) throw new Error("Capture storage values must be strings");
+          await browser.evaluate(`(() => {
+            if (location.origin !== ${JSON.stringify(url.origin)}) throw new Error('Capture redirected to another origin; state was not applied');
+            for (const [key, value] of Object.entries(${JSON.stringify(args.session_storage ?? {})})) sessionStorage.setItem(key, value);
+            for (const [key, value] of Object.entries(${JSON.stringify(args.local_storage ?? {})})) localStorage.setItem(key, value);
+            return true;
+          })()`);
+          await browser.call("open", url.href);
+        }
+        if (args.ready_selector) await browser.evaluate(`(async () => {
+          const deadline = Date.now() + 10000;
+          while (Date.now() < deadline) {
+            const node = document.querySelector(${JSON.stringify(args.ready_selector)});
+            if (node && node.getBoundingClientRect().width && node.getBoundingClientRect().height) return true;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          throw new Error('Intended capture state did not become ready');
+        })()`);
+        const temporary_screenshot = join(store.directory, `${id}.capture.png`);
+        const snapshot = await captureConsistently(browser, args.selector, temporary_screenshot);
+        if (args.ready_selector && !await browser.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(args.ready_selector)}); return !!(node && node.getBoundingClientRect().width && node.getBoundingClientRect().height); })()`)) throw new Error("Intended capture state changed during capture");
+        const capture_context = { policy: 3, state_label: args.state_label ?? (args.session_storage || args.local_storage ? "explicit prepared state" : "isolated default state"), state_fingerprint: digest({ session: args.session_storage ?? {}, local: args.local_storage ?? {} }), ready_selector: args.ready_selector };
         const font_evidence: NonNullable<DesignRecord["font_evidence"]> = [];
         for (const asset of snapshot.font_assets ?? []) {
           try {
@@ -629,18 +686,19 @@ export class Adapter {
           node.children.forEach(resolveFonts);
         };
         resolveFonts(snapshot.root);
-        const capture_id = digest({ capture_policy: 2, workspace: source.root, source_revision: source.revision, url: url.href, selector: args.selector, viewport, root: snapshot.root });
+        const capture_id = digest({ capture_context, workspace: source.root, source_revision: source.revision, url: url.href, selector: args.selector, viewport, root: snapshot.root });
         try {
           const existing = await store.load(capture_id);
           return { version: VERSION, status: "captured", capture_id: existing.id, source_revision: existing.source_revision, screenshot: existing.screenshot, findings: existing.findings, reused: true };
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const screenshot = join(store.directory, `${capture_id}.png`);
-        await browser.call("screenshot", args.selector, screenshot);
+        await rename(temporary_screenshot, screenshot);
         const record: DesignRecord = { version: VERSION, id: capture_id, workspace: source.root, source_revision: source.revision, source_files: source.files, source_index: await sourceIndex(source.root, source.files), url: url.href, selector: args.selector, viewport, root: snapshot.root, screenshot, findings: snapshot.findings, phase: "import", operations: [] };
         record.font_evidence = font_evidence;
+        record.capture_context = capture_context;
         await store.save(record);
         return { version: VERSION, status: "captured", capture_id, source_revision: record.source_revision, screenshot, findings: record.findings };
-      } finally { await browser.call("close").catch(() => undefined); }
+      } finally { await browser.call("close").catch(() => undefined); await rm(join(store.directory, `${id}.capture.png`), { force: true }); }
     }
     if (name === "preflight") {
       const arguments_ = JSON.parse(args.argumentsJson);
@@ -649,6 +707,7 @@ export class Adapter {
       for (const record of records) {
         const operation = record.operations.find(operation => operation.status !== "applied");
         if (operation?.hash !== hash || operation.status !== "pending") continue;
+        if (record.phase === "import" && record.capture_context?.policy !== 3) throw new Error("Capture predates state-consistency checks; recapture before importing");
         const source = await inventory(record.workspace);
         if (source.revision !== record.source_revision) throw new Error("Source changed since capture; recapture before importing");
         if (record.phase === "design") {
@@ -664,6 +723,11 @@ export class Adapter {
     }
     const record = args.capture_id ? await store.load(args.capture_id) : (await store.list()).find(record => record.artboard_id === args.nodeId && (!args.fileId || record.file_id === args.fileId));
     if (!record) throw new Error("No matching captured artboard; supply capture_id");
+    if ((name === "prepare_import" || ((name === "resolve_operation" || name === "check" || name === "verify") && record.phase === "import")) && record.capture_context?.policy !== 3) {
+      const message = "Capture predates state-consistency checks. Recapture the intended page state before importing or evaluating fidelity.";
+      const inspector = await this.publish(store, record, "outdated", message);
+      return { version: VERSION, status: "blocked", reason: "capture-state-unverified", capture_id: record.id, message, inspector, fidelity_claim: false };
+    }
     if (name === "execute") throw new Error("Prepared operations must be executed through the fx host");
     if (name === "resolve_operation") {
       const operation = record.operations.find(operation => operation.status !== "applied");
