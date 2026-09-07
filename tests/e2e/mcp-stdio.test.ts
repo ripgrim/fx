@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -23,6 +24,51 @@ import {
 } from "./tmux-helpers";
 
 const MODEL = "openai/gpt-5";
+
+test.skipIf(!tmuxAvailable())("design diff shortcut opens the latest preview without consuming the draft", async () => {
+  const root = createRoot("diff-shortcut", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const url = "http://127.0.0.1:12345/test/checkpoint/view";
+  const server = config.mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = "design_verify";
+  server.environment.FX_MCP_RAW_RESULT = "1";
+  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify({ inspector: { state: "needs-repair", url, auto_open: false } });
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
+  const bin = join(root.root, "bin");
+  mkdirSync(bin);
+  const opened = join(root.root, "opened-url");
+  for (const launcher of ["xdg-open", "open"]) {
+    const path = join(bin, launcher);
+    writeFileSync(path, '#!/bin/sh\nprintf "%s" "$1" > "$FX_DIFF_OPEN_LOG"\n');
+    chmodSync(path, 0o755);
+  }
+  gateway = startFakeGateway([
+    fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_fx_design_verify" }),
+    fakeGatewayToolCall("verify", "mcp_fx_design_verify", { text: "verify" }),
+    fakeGatewayFinalText("Preview available."),
+  ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: {
+    ...fixtureEnv(root, gateway), FX_PERMISSION_MODE: "yolo", PATH: `${bin}:${process.env.PATH}`, FX_DIFF_OPEN_LOG: opened,
+  } });
+  await tui.waitForComposer();
+  await tui.sendText("Verify the design preview.");
+  await tui.waitForText("Preview available.", 30_000);
+  // Yolo's safety warning deliberately takes priority over normal footer tips.
+  await tui.sendText("/permissions auto");
+  await tui.waitForText("Diff ready", 15_000);
+  await tui.sendKeys("draft");
+  await tui.sendKeys("C-d");
+  await tui.waitForPane((pane) => existsSync(opened) && pane.includes("draft"), 10_000);
+  expect(readFileSync(opened, "utf8")).toBe(url);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c");
+  await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+}, 60_000);
 const TOOL_NAME = "mcp_fixture_echo";
 const MODERN_RESULT = "MODERN_MCP_TOOL_RESULT";
 const LEGACY_RESULT = "LEGACY_MCP_TOOL_RESULT";

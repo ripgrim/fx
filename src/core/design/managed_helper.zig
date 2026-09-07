@@ -189,19 +189,65 @@ pub fn inspectorNotice(alloc: std.mem.Allocator, output: []const u8, interactive
     if (!std.mem.startsWith(u8, view.url, "http://127.0.0.1:") or view.url.len > 200) return null;
     for (view.url) |byte| if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, ":/.-", byte) == null) return null;
     if (interactive and view.auto_open and !@import("builtin").is_test and @import("builtin").os.tag != .wasi) {
-        const opened = @import("../hosts/url_opener.zig").native_opener.open(alloc, view.url) catch false;
-        if (!opened and @import("builtin").os.tag == .linux and io_mod.getenv("WSL_INTEROP") != null) {
-            const command = try std.fmt.allocPrint(alloc, "Start-Process -FilePath '{s}' -WindowStyle Hidden", .{view.url});
-            defer alloc.free(command);
-            const launched = std.process.run(alloc, io_mod.getIo(), .{ .argv = &.{ "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command } }) catch null;
-            if (launched) |value| {
-                alloc.free(value.stdout);
-                alloc.free(value.stderr);
-            }
-        }
+        _ = try open_inspector(alloc, view.url);
     }
     const state = if (std.mem.eql(u8, view.state, "verified")) "verified" else if (std.mem.eql(u8, view.state, "needs-repair")) "needs repair" else if (std.mem.eql(u8, view.state, "building")) "building" else if (std.mem.eql(u8, view.state, "checking")) "checking" else "outdated";
     return try std.fmt.allocPrint(alloc, "{s}\nReview diff: {s}", .{ state, view.url });
+}
+
+/// Borrow the latest host-produced checkpoint link from session transcript evidence.
+/// A newer pending/unavailable checkpoint supersedes an older ready preview.
+pub fn latest_inspector_url(entries: anytype) ?[]const u8 {
+    var index = entries.len;
+    while (index > 0) {
+        index -= 1;
+        const entry = entries[index];
+        if (entry != .semantic_notice) continue;
+        const notice = entry.semantic_notice;
+        if (!std.mem.eql(u8, notice.topic, "design verification")) continue;
+        return ready_notice_url(notice.body);
+    }
+    return null;
+}
+
+fn ready_notice_url(body: []const u8) ?[]const u8 {
+    const prefix = if (std.mem.startsWith(u8, body, "verified\nReview diff: "))
+        "verified\nReview diff: "
+    else if (std.mem.startsWith(u8, body, "needs repair\nReview diff: "))
+        "needs repair\nReview diff: "
+    else
+        return null;
+    const url = body[prefix.len..];
+    if (!std.mem.startsWith(u8, url, "http://127.0.0.1:") or url.len > 200) return null;
+    for (url) |byte| if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, ":/.-", byte) == null) return null;
+    return url;
+}
+
+/// Reuse the same platform/WSL launcher as automatic inspector presentation.
+pub fn open_inspector(alloc: std.mem.Allocator, url: []const u8) !bool {
+    if (!std.mem.startsWith(u8, url, "http://127.0.0.1:") or url.len > 200) return false;
+    for (url) |byte| if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, ":/.-", byte) == null) return false;
+    if (@import("builtin").is_test) return true;
+    if (@import("builtin").os.tag == .wasi) return false;
+    if (@import("../hosts/url_opener.zig").native_opener.open(alloc, url) catch false) return true;
+    if (@import("builtin").os.tag != .linux or io_mod.getenv("WSL_INTEROP") == null) return false;
+    const command = try std.fmt.allocPrint(alloc, "Start-Process -FilePath '{s}' -WindowStyle Hidden", .{url});
+    defer alloc.free(command);
+    const launched = std.process.run(alloc, io_mod.getIo(), .{ .argv = &.{ "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", command } }) catch return false;
+    defer alloc.free(launched.stdout);
+    defer alloc.free(launched.stderr);
+    return switch (launched.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+test "design diff shortcut requires a ready safe checkpoint" {
+    try std.testing.expect(ready_notice_url("building\nReview diff: http://127.0.0.1:1234/a/view") == null);
+    try std.testing.expect(ready_notice_url("checking\nReview diff: http://127.0.0.1:1234/a/view") == null);
+    try std.testing.expect(ready_notice_url("verified\nReview diff: https://example.com") == null);
+    try std.testing.expect(ready_notice_url("verified\nReview diff: http://127.0.0.1:1234/\x1b") == null);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/a/view", ready_notice_url("needs repair\nReview diff: http://127.0.0.1:1234/a/view").?);
 }
 
 /// Host-owned receipt. Both inputs are actual MCP outputs, never assistant claims.

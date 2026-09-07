@@ -773,6 +773,7 @@ pub fn Runtime(comptime App: type) type {
                 else
                     .{},
                 .upgrade_status = upgrade_label,
+                .design_diff_ready = if (comptime @hasField(App, "shell")) @import("../design/managed_helper.zig").latest_inspector_url(app.shell.entries.items) != null else false,
                 .danger_status = if (yolo_warning_active)
                     app_permission_runtime.yolo_warning_text
                 else

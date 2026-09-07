@@ -488,6 +488,8 @@ pub fn composeHintRow(
         ""
     else if (danger_text.len > 0)
         danger_text
+    else if (ctx.design_diff_ready and !approval_active and !ctx.auth_picker.active and !ctx.subagent_view_active)
+        "Diff ready · ctrl+d to open"
     else
         ctx.upgrade_status;
     const right_width = display_width.visibleWidth(right_text);
@@ -1877,6 +1879,20 @@ test "compose hint row right-aligns upgrade status after styled auto mode" {
     try std.testing.expect(std.mem.find(u8, row.items, "update ready: ctrl+g to reload") != null);
     try std.testing.expect(std.mem.find(u8, row.items, "\x1b[27G") != null);
     try std.testing.expect(display_width.visibleWidthIgnoringAnsi(row.items) <= 56);
+}
+
+test "design diff shortcut hint appears beside model only when ready" {
+    var input = InputRuntime{};
+    defer input.deinit(std.testing.allocator);
+    var ctx = testRenderContext(&input);
+    ctx.design_diff_ready = true;
+    var ready = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer ready.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, ready.items, "Diff ready · ctrl+d to open") != null);
+    ctx.design_diff_ready = false;
+    var pending = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer pending.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, pending.items, "Diff ready") == null);
 }
 
 test "compose hint row prioritizes red yolo warning with compact fallback" {

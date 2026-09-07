@@ -16,7 +16,7 @@ const urlRequiredOperation = process.env.FX_MCP_URL_REQUIRED_OPERATION ?? "tools
 let buffer = Buffer.alloc(0);
 let messageCount = 0;
 let toolsListCalls = 0;
-let currentToolName = "echo";
+let currentToolName = process.env.FX_MCP_INITIAL_TOOL_NAME ?? "echo";
 let pendingToolCall = null;
 let urlRequiredSent = false;
 let completionStage = 0;
@@ -428,7 +428,7 @@ function handle(message) {
       result: {
         content: [{
           type: "text",
-          text: `${resultText}:${message.params?.arguments?.text ?? ""}`,
+          text: process.env.FX_MCP_RAW_RESULT === "1" ? resultText : `${resultText}:${message.params?.arguments?.text ?? ""}`,
         }],
       },
     });

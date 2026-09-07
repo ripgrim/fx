@@ -106,6 +106,14 @@ codebase → editable Paper design → verified codebase workflow.
 - Add deterministic product E2E coverage and its PGSO corpus classification,
   helper CI coverage, and live Paper acceptance against the Comp product demo.
 
+## Diff shortcut
+
+When a checkpoint preview is available, the footer shows `Diff ready · ctrl+d to open`.
+Press Ctrl+D to open that checkpoint in your browser without changing your draft.
+Building/checking checkpoints do not enable the shortcut. Without a ready preview,
+Ctrl+D retains its normal delete-forward/exit behavior. Safety notices take priority
+over the footer hint. The latest host checkpoint in the current transcript owns the link.
+
 ## Local checks
 
 ```sh
