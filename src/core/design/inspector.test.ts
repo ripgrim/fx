@@ -119,6 +119,7 @@ test("host checkpoints defer partial imports, verify finished groups and never r
     record.file_id = "file";
     record.source_manifest = [{ key: "0", label: "fixture", name: "root", styles: {}, width: 10, height: 10 }];
     record.artboard_id = undefined;
+    record.capture_context = { policy: 3, state_label: "test fixture", state_fingerprint: "fixture" };
     await store.save(record);
     const args = { session_directory: directory, capture_id: "capture" };
     const building = await adapter.call("check", args);

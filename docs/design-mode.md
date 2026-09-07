@@ -139,6 +139,8 @@ at most one reminder per turn. A blocked turn may end without claiming fidelity.
 
 When a checkpoint preview is available, the footer shows `Diff ready · ctrl+d to open`.
 Press Ctrl+D to open that checkpoint in your browser without changing your draft.
+Inside the lightbox, scroll or pinch to zoom, and drag or use two fingers to pan.
+Keyboard zoom and arrow-key panning remain available, alongside Fit and 100% reset.
 Building/checking checkpoints do not enable the shortcut. Without a ready preview,
 Ctrl+D retains its normal delete-forward/exit behavior. Safety notices take priority
 over the footer hint. The latest host checkpoint in the current transcript owns the link.

@@ -39,10 +39,16 @@ test("inspector renders actual snapshots, focuses findings and fits narrow viewp
     await browser.evaluate(`document.querySelector('#source').focus();document.querySelector('#source').click()`);
     expect(await browser.evaluate(`document.querySelector('#lightbox').open`)).toBe(true);
     expect(await browser.evaluate(`document.querySelector('#lightbox-source').width`)).toBe(52);
-    await browser.evaluate(`document.querySelector('#zoom-native').click();document.querySelector('#zoom-in').click()`);
-    expect(await browser.evaluate(`document.querySelector('#zoom-value').value`)).toBe("150%");
-    await browser.evaluate(`document.querySelector('.lightbox-viewport').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}))`);
+    await browser.evaluate(`document.querySelector('#zoom-native').click();const v=document.querySelector('.lightbox-viewport'),r=v.getBoundingClientRect();v.dispatchEvent(new WheelEvent('wheel',{deltaY:-200,clientX:r.left+r.width/2,clientY:r.top+r.height/2,cancelable:true}))`);
+    expect(await browser.evaluate(`document.querySelector('#zoom-value').value`)).toBe("149%");
+    expect(await browser.evaluate(`document.querySelector('#zoom-in')===null&&document.querySelector('#zoom-out')===null`)).toBe(true);
+    await browser.evaluate(`document.querySelector('#zoom-native').click();document.querySelector('.lightbox-viewport').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}))`);
     expect(await browser.evaluate(`(()=>{const transforms=['source','paper','diff'].map(id=>document.querySelector('#lightbox-'+id).style.transform);return transforms[0].includes('32px')&&transforms.every(value=>value===transforms[0])})()`)).toBe(true);
+    // Synthetic touch pointers exercise centroid pan and pinch scale together.
+    await browser.evaluate(`(()=>{document.querySelector('#zoom-native').click();const v=document.querySelector('.lightbox-viewport');v.setPointerCapture=()=>{};const send=(type,id,x)=>v.dispatchEvent(new PointerEvent(type,{pointerId:id,pointerType:'touch',button:0,clientX:x,clientY:100}));send('pointerdown',1,100);send('pointerdown',2,200);send('pointermove',2,300);send('pointerup',2,300);send('pointercancel',1,100)})()`);
+    expect(await browser.evaluate(`document.querySelector('#zoom-value').value`)).toBe("200%");
+    expect(await browser.evaluate(`(()=>{const v=document.querySelector('.lightbox-viewport'),send=(type,id,x)=>v.dispatchEvent(new PointerEvent(type,{pointerId:id,pointerType:'touch',button:0,clientX:x,clientY:100}));const before=pan_x;send('pointerdown',1,100);send('pointerdown',2,300);send('pointermove',1,120);send('pointermove',2,320);send('pointerup',1,120);send('pointerup',2,320);return Math.abs(pan_x-before-20)<.001&&Math.abs(lightbox_scale-2)<.001})()`)).toBe(true);
+    expect(await browser.evaluate(`(()=>{const transforms=['source','paper','diff'].map(id=>document.querySelector('#lightbox-'+id).style.transform);return transforms.every(value=>value===transforms[0])})()`)).toBe(true);
     await browser.call("press", "Escape");
     expect(await browser.evaluate(`!document.querySelector('#lightbox').open&&document.activeElement.id==='source'&&document.querySelector('#source').width===52`)).toBe(true);
     await browser.evaluate(`document.querySelector('#full').click();document.querySelector('#pixels').click()`);
