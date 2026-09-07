@@ -748,7 +748,7 @@ pub const Store = struct {
         };
     }
 
-    fn durableModeWritableByGroupOrOther(mode: std.posix.mode_t) bool {
+    fn durableModeWritableByGroupOrOther(mode: u32) bool {
         return mode & 0o022 != 0;
     }
 
@@ -3098,6 +3098,12 @@ test "symlinked durable home is rejected before reading settings" {
         error.DurablePathUnsafe,
         Store.initFromHome(alloc, home, .read_only),
     );
+}
+
+test "durable mode checks accept normalized 32-bit permissions" {
+    try std.testing.expect(!Store.durableModeWritableByGroupOrOther(@as(u32, 0o100600)));
+    try std.testing.expect(Store.durableModeWritableByGroupOrOther(@as(u32, 0o100620)));
+    try std.testing.expect(Store.durableModeWritableByGroupOrOther(@as(u32, 0o100602)));
 }
 
 test "read only settings rejects group or world writable policy files" {

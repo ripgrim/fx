@@ -561,11 +561,22 @@ test "background open preserves opened failed and unsupported output" {
     );
     try std.testing.expectEqual(@as(usize, 2), capture.calls);
 
-    const unsupported = try openUrlOutcome(
+    const windows_opened = try openUrlOutcome(
         alloc,
         opener,
         url,
         host.nativeForOs(.windows).url_open,
+    );
+    defer alloc.free(windows_opened.text);
+    try std.testing.expect(windows_opened.succeeded);
+    try std.testing.expectEqualStrings("opened http://localhost:3000", windows_opened.text);
+    try std.testing.expectEqual(@as(usize, 3), capture.calls);
+
+    const unsupported = try openUrlOutcome(
+        alloc,
+        opener,
+        url,
+        host.nativeForOs(.wasi).url_open,
     );
     defer alloc.free(unsupported.text);
     try std.testing.expect(!unsupported.succeeded);
@@ -573,7 +584,7 @@ test "background open preserves opened failed and unsupported output" {
         "open_url not supported on this OS",
         unsupported.text,
     );
-    try std.testing.expectEqual(@as(usize, 2), capture.calls);
+    try std.testing.expectEqual(@as(usize, 3), capture.calls);
 }
 
 test "logs reports parse errors no match and log read failures" {
