@@ -26,6 +26,31 @@ import {
 
 const MODEL = "openai/gpt-5";
 
+test.skipIf(!tmuxAvailable())("diff command upgrades an already connected older managed helper", async () => {
+  const root = createRoot("diff-managed", LEGACY_FIXTURE);
+  const helperDirectory = join(root.home, ".fx", "helpers", "design");
+  mkdirSync(helperDirectory, { recursive: true });
+  const launcher = join(helperDirectory, "v1.ts");
+  writeFileSync(launcher, `import ${JSON.stringify(LEGACY_FIXTURE)};\n`);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const server = JSON.parse(readFileSync(configPath, "utf8")).mcp.fixture;
+  server.command = [process.execPath, "run", launcher];
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx_design: server } }));
+  gateway = startFakeGateway([fakeGatewayFinalText("Session started.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  await tui.sendText("Start session.");
+  await tui.waitForText("Session started.");
+  await tui.sendText("/diff node:missing");
+  await tui.waitForText("No linked artboard", 30000);
+  expect(gateway.requests).toHaveLength(1);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 45000);
+
 for (const denied of [false, true]) test.skipIf(!tmuxAvailable())("diff command produces a host link without an AI turn" + (denied ? " and honors denies" : ""), async () => {
   const root = createRoot("diff-command", LEGACY_FIXTURE);
   const configPath = join(root.home, ".fx", "mcp.json");

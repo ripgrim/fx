@@ -1,5 +1,27 @@
 const std = @import("std");
 const session_permission_state = @import("../permissions/session_permission_state.zig");
+const io_mod = @import("../shared/io.zig");
+
+fn call(app: anytype, bound: []const u8) !?@import("../tooling/tool_mcp_runtime.zig").CallResult {
+    var lease = app.acquireMcpRuntime() orelse return null;
+    defer lease.deinit();
+    return lease.runtime.callToolByName(app.alloc, "mcp_fx_design_diff", bound, 65536);
+}
+
+// An existing process can still advertise the previous bundle's catalog.
+// Refresh once, release the old runtime lease, and wait for publication.
+fn callWithRecovery(app: anytype, bound: []const u8) !?@import("../tooling/tool_mcp_runtime.zig").CallResult {
+    if (try call(app, bound)) |result| return result;
+    if (comptime !@hasDecl(@TypeOf(app.*), "ensureDesignModeMcp")) return null;
+    const outcome = try app.ensureDesignModeMcp();
+    if (outcome == .installed_reload_failed) return error.McpRuntimeUnavailable;
+    const start = std.Io.Clock.awake.now(io_mod.getIo());
+    while (start.durationTo(std.Io.Clock.awake.now(io_mod.getIo())).toMilliseconds() < 15000) {
+        try io_mod.getIo().sleep(.fromMilliseconds(50), .awake);
+        if (try call(app, bound)) |result| return result;
+    }
+    return null;
+}
 
 /// Direct user command. No agent turn, source edits, or Paper mutations.
 pub fn run(app: anytype, rest: []const u8, session_id: ?[]const u8) !void {
@@ -29,18 +51,13 @@ pub fn run(app: anytype, rest: []const u8, session_id: ?[]const u8) !void {
         try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Diff is restricted by your MCP permission rule." }, true);
         return;
     }
-    var lease = app.acquireMcpRuntime() orelse {
-        try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Enter Design mode and connect the design helper first." }, true);
-        return;
-    };
-    defer lease.deinit();
-    var result = (lease.runtime.callToolByName(app.alloc, "mcp_fx_design_diff", bound, 65536) catch |err| {
+    var result = (callWithRecovery(app, bound) catch |err| {
         const failure = try std.fmt.allocPrint(app.alloc, "Comparison unavailable: {s}.", .{@errorName(err)});
         defer app.alloc.free(failure);
         try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = failure }, true);
         return;
     }) orelse {
-        try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Reload the design helper to enable /diff." }, true);
+        try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Design helper unavailable. Check /mcp." }, true);
         return;
     };
     defer result.deinit(app.alloc);
