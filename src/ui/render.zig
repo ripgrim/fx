@@ -177,18 +177,19 @@ const dev_revision_bytes: usize = 7;
 fn writeBuildLabel(
     out: []u8,
     channel: update_target.Channel,
+    local_dev: bool,
     version_text: []const u8,
     revision: []const u8,
 ) ![]const u8 {
-    if (channel != .dev) return std.fmt.bufPrint(out, "v{s}", .{version_text});
-    if (revision.len < dev_revision_bytes or std.mem.eql(u8, revision, "unknown")) {
-        return std.fmt.bufPrint(out, "v{s} {s}[dev]{s}", .{ version_text, hint_style, dim_style });
+    if (channel != .dev and !local_dev) return std.fmt.bufPrint(out, "v{s}", .{version_text});
+    if (channel != .dev or revision.len < dev_revision_bytes or std.mem.eql(u8, revision, "unknown")) {
+        return std.fmt.bufPrint(out, "{s}[dev]{s} v{s}", .{ hint_style, dim_style, version_text });
     }
-    return std.fmt.bufPrint(out, "v{s}-{s} {s}[dev]{s}", .{
-        version_text,
-        revision[0..dev_revision_bytes],
+    return std.fmt.bufPrint(out, "{s}[dev]{s} v{s}-{s}", .{
         hint_style,
         dim_style,
+        version_text,
+        revision[0..dev_revision_bytes],
     });
 }
 
@@ -197,6 +198,7 @@ pub fn welcomeMessage(alloc: std.mem.Allocator) ![]u8 {
     const build_label = try writeBuildLabel(
         &label_buf,
         build_channel,
+        @import("builtin").mode == .Debug,
         main.version,
         build_options.git_commit,
     );
@@ -898,6 +900,7 @@ test "welcomeMessage keeps only the app name bright" {
     const build_label = try writeBuildLabel(
         &label_buf,
         build_channel,
+        @import("builtin").mode == .Debug,
         main.version,
         build_options.git_commit,
     );
@@ -913,19 +916,26 @@ test "welcomeMessage keeps only the app name bright" {
 
 test "build label stays bare on the stable channel" {
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .stable, "0.0.4", "abcdef123456");
+    const label = try writeBuildLabel(&buf, .stable, false, "0.0.4", "abcdef123456");
     try std.testing.expectEqualStrings("v0.0.4", label);
+}
+
+test "local development build label precedes the version without switching update channels" {
+    var buf: [welcome_build_label_bytes]u8 = undefined;
+    const label = try writeBuildLabel(&buf, .stable, true, "0.0.7", "abcdef123456");
+    try std.testing.expect(std.mem.find(u8, label, "[dev]").? < std.mem.find(u8, label, "v0.0.7").?);
+    try std.testing.expect(std.mem.find(u8, label, "abcdef") == null);
 }
 
 test "dev build label carries the commit and restores the dim run after the tag" {
     initTheme(false, null);
 
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .dev, "0.0.5", "abcdef123456");
+    const label = try writeBuildLabel(&buf, .dev, false, "0.0.5", "abcdef123456");
 
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
-        "v0.0.5-abcdef1 {s}[dev]{s}",
+        "{s}[dev]{s} v0.0.5-abcdef1",
         .{ hint_style, dim_style },
     );
     defer std.testing.allocator.free(expected);
@@ -937,11 +947,11 @@ test "dev build label drops an unresolved revision" {
     initTheme(false, null);
 
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .dev, "0.0.5", "unknown");
+    const label = try writeBuildLabel(&buf, .dev, false, "0.0.5", "unknown");
 
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
-        "v0.0.5 {s}[dev]{s}",
+        "{s}[dev]{s} v0.0.5",
         .{ hint_style, dim_style },
     );
     defer std.testing.allocator.free(expected);

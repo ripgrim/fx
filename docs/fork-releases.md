@@ -43,6 +43,9 @@ The fork does not currently publish a `dev` upgrade channel.
 Stable self-updates use only `ripgrim/fx` GitHub release assets, not Vercel's CDN.
 Before the first fork release exists, update checks cannot discover an update.
 For local development, `fx-dev` remains a link to the latest local build.
+Default Debug builds show `fx [dev] v<version>` in the welcome header. This badge
+does not change the stable self-update channel. Optimized stable release builds
+omit the badge; dev-channel builds retain their commit-qualified version.
 
 The upstream website installer still installs upstream fx. For this fork, build
 from this checkout or download the matching archive from this repository's
