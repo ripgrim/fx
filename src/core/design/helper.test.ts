@@ -1,5 +1,5 @@
 import { describe, expect, test, spyOn } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,34 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("diff finds workspace imports across sessions and keeps evidence with its owner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fx-diff-sessions-"));
+    const directory = join(root, "sessions", "new");
+    const workspace = join(root, "project");
+    await mkdir(directory, { recursive: true });
+    await mkdir(workspace);
+    const owner = new Store(join(root, "sessions", "old", "design"));
+    const source = { ...record(workspace), artboard_id: "board", file_id: "file", source_revision: (await inventory(workspace)).revision };
+    await owner.save(source);
+    const adapter = new Adapter();
+    const compare = spyOn(adapter, "compareCapture").mockResolvedValue({ status: "ready" });
+    const initialize = spyOn(PaperReader.prototype, "initialize").mockResolvedValue(undefined);
+    const read = spyOn(PaperReader.prototype, "read").mockImplementation(async name => ({ content: [{ type: "text", text: JSON.stringify(name === "get_selection" ? { selectedNodes: [{ id: "board" }] } : { url: "https://app.paper.design/file/file/page" }) }] }));
+    try {
+      for (const target of ["", "node:board", "capture:capture", "/demo"]) {
+        expect((await adapter.call("diff", { session_directory: directory, workspace, target })).status).toBe("ready");
+        expect(compare.mock.calls.at(-1)![0].directory).toBe(owner.directory);
+      }
+      expect(await new Store(join(directory, "design")).list()).toEqual([]);
+      const foreign = join(root, "other-project");
+      await mkdir(foreign);
+      expect((await adapter.call("diff", { session_directory: directory, workspace: foreign, target: "node:board" })).message).toContain("No linked artboard");
+      delete source.capture_context;
+      await owner.save(source);
+      expect((await adapter.call("diff", { session_directory: directory, workspace, target: "node:board" })).message).toContain("Recapture required");
+      expect(compare).toHaveBeenCalledTimes(4);
+    } finally { compare.mockRestore(); initialize.mockRestore(); read.mockRestore(); await adapter.close(); await rm(root, { recursive: true }); }
+  });
   test("diff resolves linked targets and refuses ambiguous or unmapped selections", async () => {
     const directory = await mkdtemp(join(tmpdir(), "fx-diff-command-"));
     const adapter = new Adapter();

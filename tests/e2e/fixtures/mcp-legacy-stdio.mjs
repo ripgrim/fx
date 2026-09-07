@@ -267,7 +267,7 @@ function handle(message) {
               : {}),
             type: "object",
             properties: {
-              ...(currentToolName === "design_diff" ? { target: { type: "string" }, session_directory: { type: "string" } } : {}),
+              ...(currentToolName === "design_diff" ? { target: { type: "string" }, workspace: { type: "string" }, session_directory: { type: "string" } } : {}),
               text: {
                 type: "string",
                 ...(draft7Pattern ? { pattern: draft7Pattern } : {}),

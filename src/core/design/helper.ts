@@ -1,7 +1,7 @@
 /** fx's managed design adapter. Paper mutations are executed by fx, never here. */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, readdir, realpath, rm } from "node:fs/promises";
-import { resolve, relative, join, isAbsolute } from "node:path";
+import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { brotliDecompressSync } from "node:zlib";
@@ -592,7 +592,7 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
-  tool("diff", "Compare a linked Paper artboard against its saved source capture without editing Paper or source. Optional target is node:ID, capture:ID, or a linked route.", { session_directory: string, target: { type: "string" } }, ["session_directory"], false),
+  tool("diff", "Compare a linked Paper artboard against its saved source capture without editing Paper or source. Optional target is node:ID, capture:ID, or a linked route.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
@@ -647,7 +647,22 @@ export class Adapter {
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
     if (name === "diff") {
-      let records = (await store.list()).filter(record => record.artboard_id);
+      const stores = [store];
+      const workspace = args.workspace ? await realpath(args.workspace) : undefined;
+      // Session directories are host-bound. Search only sibling sessions in this profile,
+      // and retain the owning store so evidence is never moved into the new session.
+      if (workspace) for (const entry of await readdir(dirname(directory), { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name !== directory.split(/[\\/]/).pop()) stores.push(new Store(join(dirname(directory), entry.name, "design")));
+      }
+      const owners = new Map<DesignRecord, Store>();
+      for (const owner of stores) {
+        for (const record of await owner.list().catch(() => [])) {
+          if (!record.artboard_id) continue;
+          if (workspace && await realpath(record.workspace).catch(() => undefined) !== workspace) continue;
+          owners.set(record, owner);
+        }
+      }
+      let records = [...owners.keys()];
       const target = String(args.target ?? "").trim();
       if (target.startsWith("capture:")) records = records.filter(record => record.id === target.slice(8));
       else if (target.startsWith("node:")) records = records.filter(record => record.artboard_id === target.slice(5));
@@ -662,7 +677,7 @@ export class Adapter {
           const info = paperObject(await paper.read("get_basic_info", {}));
           const fileId = typeof info.url === "string" ? new URL(info.url).pathname.split("/")[2] : undefined;
           if (!fileId) throw new Error("Cannot identify the selected Paper file");
-          records = records.filter(record => record.file_id === fileId && selection.selectedNodes.some((node: Json) => node.id === record.artboard_id));
+          records = records.filter(record => (!record.file_id || record.file_id === fileId) && selection.selectedNodes.some((node: Json) => node.id === record.artboard_id));
         }
         else records.sort((a, b) => (b.verification?.checked_at ?? "").localeCompare(a.verification?.checked_at ?? ""));
         if (!selection.selectedNodes.length && records.length > 1 && records[0].verification?.checked_at && records[0].verification.checked_at !== records[1].verification?.checked_at) records = records.slice(0, 1);
@@ -670,8 +685,9 @@ export class Adapter {
       if (!records.length) return { status: "blocked", message: "No linked artboard. Select an imported artboard or use /diff capture:ID." };
       if (records.length !== 1) return { status: "blocked", message: "Choose a capture: " + records.map(record => `/diff capture:${record.id}`).join(" · ") };
       const record = records[0];
+      if (!record.file_id || record.capture_context?.policy !== 3) return { status: "blocked", message: "Recapture required. This import predates verified page-state capture." };
       if ((await inventory(record.workspace)).revision !== record.source_revision) return { status: "blocked", message: "Source changed. Recapture the intended page state before comparing." };
-      return this.compareCapture(store, record);
+      return this.compareCapture(owners.get(record)!, record);
     }
     if (name === "discover") {
       const source = await inventory(args.workspace);

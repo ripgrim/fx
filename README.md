@@ -122,6 +122,8 @@ Stateful design captures use an isolated browser with optional explicit storage 
 
 Use `/diff` to compare a linked Paper artboard against its saved capture without an AI turn. The host returns a clickable viewer link. `/diff node:ID`, `/diff capture:ID`, and linked routes select explicit targets; Ctrl+D opens the latest ready comparison. If an older connected helper lacks the command, fx refreshes it automatically before retrying.
 
+Imports are found across sessions in the current workspace; their evidence stays in the original session. Captures made before page-state verification require recapturing before comparison.
+
 ## Embed fx
 
 fx builds as a native binary or WebAssembly. Applications embedding fx can provide network transport, session storage, configuration, permission handling, and terminal I/O.

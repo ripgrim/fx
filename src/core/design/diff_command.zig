@@ -30,7 +30,7 @@ pub fn run(app: anytype, rest: []const u8, session_id: ?[]const u8) !void {
         try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Open a session with an imported artboard first." }, true);
         return;
     };
-    const args = try std.json.Stringify.valueAlloc(app.alloc, .{ .target = rest }, .{});
+    const args = try std.json.Stringify.valueAlloc(app.alloc, .{ .target = rest, .workspace = app.workspace_root }, .{});
     defer app.alloc.free(args);
     const bound = try design.bindArguments(app.alloc, args, id);
     defer app.alloc.free(bound);

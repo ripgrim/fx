@@ -44,6 +44,11 @@ test.skipIf(!tmuxAvailable())("diff command upgrades an already connected older 
   await tui.waitForText("Session started.");
   await tui.sendText("/diff node:missing");
   await tui.waitForText("No linked artboard", 30000);
+  const oldDesign = join(root.home, ".fx", "sessions", "earlier-session", "design");
+  mkdirSync(oldDesign, { recursive: true });
+  writeFileSync(join(oldDesign, "legacy.json"), JSON.stringify({ version: 1, id: "legacy", workspace: root.workspace, artboard_id: "older-board" }));
+  await tui.sendText("/diff node:older-board");
+  await tui.waitForText("Recapture required", 15000);
   expect(gateway.requests).toHaveLength(1);
   expect(readFileSync(stderrPath, "utf8")).toBe("");
   await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
