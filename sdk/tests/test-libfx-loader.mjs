@@ -48,11 +48,36 @@ const terminal = await createFxTerminal({ nativeAddon: nativeUrl, marker: 2 });
 assert.equal(terminal.backend, "native-terminal");
 assert.equal(terminal.options.marker, 2);
 
-await assert.rejects(
-  createFxAgent({ nativeAddon: nativeUrl, backend: "wasm" }),
-  (error) => error?.code === "LIBFX_JSPI_REQUIRED" &&
-    error.message.includes("--experimental-wasm-jspi"),
+// Control capabilities explicitly: Node may expose JSPI with or without a flag.
+// This loader-only test must not depend on generated WASM artifacts.
+const jspiDescriptors = new Map(
+  ["Suspending", "promising"].map((key) => [key, Object.getOwnPropertyDescriptor(WebAssembly, key)]),
 );
+try {
+  for (const available of [false, true]) {
+    for (const key of jspiDescriptors.keys()) {
+      Object.defineProperty(WebAssembly, key, {
+        configurable: true,
+        value: available ? function () {} : undefined,
+      });
+    }
+    for (const create of [createFxAgent, createFxTerminal]) {
+      const missingWasm = pathToFileURL(resolve(dir, "missing.wasm"));
+      await assert.rejects(
+        create({ nativeAddon: nativeUrl, backend: "wasm", wasm: missingWasm }),
+        (error) => available
+          ? error?.code === "ENOENT" && error.path === resolve(dir, "missing.wasm")
+          : error?.code === "LIBFX_JSPI_REQUIRED" &&
+            error.message.includes("--experimental-wasm-jspi"),
+      );
+    }
+  }
+} finally {
+  for (const [key, descriptor] of jspiDescriptors) {
+    if (descriptor) Object.defineProperty(WebAssembly, key, descriptor);
+    else delete WebAssembly[key];
+  }
+}
 
 const coreOnlyPath = resolve(dir, "core-only.mjs");
 await writeFile(coreOnlyPath, `
