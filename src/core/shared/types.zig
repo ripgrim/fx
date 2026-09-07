@@ -94,6 +94,10 @@ pub const CredentialSource = enum {
     stored_key,
     chatgpt_subscription,
     grok_subscription,
+    /// Claude Code owns this credential. fx never stores or transmits a Claude
+    /// token; presence of this source only records that the local Claude Code
+    /// install reports an authenticated subscription.
+    claude_subscription,
 };
 
 pub fn parseCredentialSource(text: []const u8) ?CredentialSource {

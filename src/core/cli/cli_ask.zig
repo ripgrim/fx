@@ -965,6 +965,7 @@ const AskContext = struct {
         }
         var tc: tool_runtime.Context = .{
             .workspace_root = self.workspace_root,
+            .interaction_mode = self.mode_id,
             .access_scope = self.workspace_access.scope(self.workspace_root),
             .ignored_list_entries = self.cfg.ignored_list_entries,
             .max_list_entries = self.cfg.max_list_entries,
@@ -1042,6 +1043,7 @@ const AskContext = struct {
         if (self.mcp != null) {
             tc.mcp_ctx = @ptrCast(self);
             tc.mcp_has_tool = mcpHasTool;
+            tc.mcp_tool_read_only = mcpToolReadOnly;
             tc.mcp_validate_tool = mcpValidateTool;
             tc.mcp_call_tool = mcpCallTool;
             tc.mcp_search_tools = mcpSearchTools;
@@ -1779,6 +1781,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .effort = ctx.effort,
         .first_call_tool_choice = ctx.first_call_tool_choice,
         .workspace_root = ctx.workspace_root,
+        .interaction_mode = ctx.mode_id,
         .access_scope = ctx.workspace_access.scope(ctx.workspace_root),
         .origin = if (ctx.writable) |writable|
             if (writable.external_prompt_origin == .persistent_child) .subagent else .root
@@ -3102,6 +3105,12 @@ fn mcpHasTool(raw_ctx: *anyopaque, name: []const u8, access: tool_mcp_runtime.Ac
     const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
     const mcp = activateAskMcp(ctx) catch return false;
     return mcp.hasToolWithAccess(name, access);
+}
+
+fn mcpToolReadOnly(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, access: tool_mcp_runtime.Access) anyerror!bool {
+    const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
+    const mcp = activateAskMcp(ctx) catch return false;
+    return mcp.toolReadOnlyByNameWithAccess(arena, name, access);
 }
 
 fn mcpValidateTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, access: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.ValidationResult {

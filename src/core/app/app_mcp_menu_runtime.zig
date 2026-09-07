@@ -1,12 +1,35 @@
 const std = @import("std");
 const builtin_mcp = @import("../../builtins/mcp.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const design_mode = @import("../modes/design_mode.zig");
+const design_helper = @import("../design/managed_helper.zig");
 const mcp_command_provider = @import("../mcp/command_provider.zig");
 const mcp_menu_state = @import("../mcp/menu_state.zig");
 const project_config = @import("../mcp/project_config.zig");
 
 pub fn Runtime(comptime App: type) type {
     return struct {
+        pub fn ensureDesignModeBackend(app: *App) !design_mode.McpSetupOutcome {
+            var result = try builtin_mcp.ensureProfileServer(
+                app.alloc,
+                design_mode.defaultCanvasServerIntent(),
+            );
+            defer result.deinit(app.alloc);
+            const helper_path = try design_helper.ensureInstalled(app.alloc);
+            defer app.alloc.free(helper_path);
+            const helper_runtime = try design_helper.runtimeExecutable(app.alloc);
+            defer app.alloc.free(helper_runtime);
+            var helper_result = try builtin_mcp.ensureProfileServer(app.alloc, .{ .local = .{
+                .name = "fx_design",
+                .command = helper_runtime,
+                .args = &.{ "run", helper_path },
+            } });
+            defer helper_result.deinit(app.alloc);
+            app.beginMcpReload() catch return .installed_reload_failed;
+            if (!result.added and !helper_result.added) return .already_configured;
+            return .installed;
+        }
+
         pub fn saveAdd(
             app: *App,
             generation: u64,

@@ -54,6 +54,7 @@ const runtime_parallel_execution = @import("parallel_execution.zig");
 const runtime_tool_batch = @import("tool_batch.zig");
 const model_response_recovery = @import("model_response_recovery.zig");
 const tool_mcp_runtime = @import("../../tooling/tool_mcp_runtime.zig");
+const design_mode = @import("../../modes/design_mode.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -79,6 +80,50 @@ const PreparedToolCall = runtime_lifecycle.PreparedToolCall;
 const TurnFinalizationGuard = runtime_finalization.TurnFinalizationGuard;
 const PromptFinishTrace = runtime_finalization.PromptFinishTrace;
 const ToolExecutionResult = runtime_tool_contracts.ToolExecutionResult;
+
+const design_completion_gate_prompt =
+    "Design completion gate: verify the current artboard through mcp_fx_design_verify. Import verification checks source fidelity; design verification records intentional changes. Report unresolved findings and do not claim applied-code fidelity without comparing the current code to Paper.";
+
+fn designFinalVerificationRequired(mode_id: []const u8, messages: []const ChatMessage) bool {
+    var required = false;
+    for (messages) |message| {
+        if (message.role != .tool) continue;
+        const tool_name = message.tool_name orelse continue;
+        required = design_mode.updateFinalVerificationRequired(
+            required,
+            mode_id,
+            tool_name,
+            message.tool_result_status == .success,
+            message.content orelse "",
+        );
+    }
+    return required;
+}
+
+test "Design completion gate tracks the latest Paper mutation and strict verify" {
+    const mutation = ChatMessage{
+        .role = .tool,
+        .content = "paper ok",
+        .tool_name = "mcp_paper_write_html",
+        .tool_result_status = .success,
+    };
+    const failed_verify = ChatMessage{
+        .role = .tool,
+        .content = "design-check: regression; confidence 9/10",
+        .tool_name = "mcp_fx_design_verify",
+        .tool_result_status = .success,
+    };
+    const clean_verify = ChatMessage{
+        .role = .tool,
+        .content = "{\"version\":1,\"status\":\"clean\",\"phase\":\"import\",\"capture_id\":\"capture-1\",\"artboard_id\":\"node-1\",\"source_revision\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"pending_verifications\":0,\"canvas_revision\":\"1111111111111111111111111111111111111111111111111111111111111111\"}",
+        .tool_name = "mcp_fx_design_verify",
+        .tool_result_status = .success,
+    };
+
+    try std.testing.expect(designFinalVerificationRequired(design_mode.id, &.{ mutation, failed_verify }));
+    try std.testing.expect(!designFinalVerificationRequired(design_mode.id, &.{ mutation, clean_verify }));
+    try std.testing.expect(!designFinalVerificationRequired("code", &.{mutation}));
+}
 
 fn append_post_tool_decision_prompt(
     alloc: Allocator,
@@ -5096,6 +5141,18 @@ fn processQueuedPromptLoop(
         if (completion.tool_calls.len == 0) {
             const has_content =
                 std.mem.trim(u8, partial_assistant, " \t\r\n").len > 0;
+            if (disposition == .completed and
+                designFinalVerificationRequired(config.interaction_mode, within_turn_suffix.items) and
+                agent_steps.allowsStep(config.agent_step_limit, step + 1))
+            {
+                try within_turn_suffix.append(arena, .{ .role = .assistant, .content = completion.content });
+                try within_turn_suffix.append(arena, .{
+                    .role = .user,
+                    .content = design_completion_gate_prompt,
+                    .cache_policy = .no_cache,
+                });
+                continue;
+            }
             const needs_continuation =
                 disposition == .completed and
                 !continuation_injected and

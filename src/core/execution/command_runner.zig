@@ -1526,7 +1526,10 @@ fn fallbackCommandArtifactDir(alloc: Allocator) ![]u8 {
 }
 
 fn currentProcessId() u64 {
-    return @intCast(std.c.getpid());
+    return if (comptime builtin.os.tag == .windows)
+        std.os.windows.GetCurrentProcessId()
+    else
+        @intCast(std.c.getpid());
 }
 
 fn elapsedMs(started_ms: i64, finished_ms: i64) u64 {
@@ -2591,13 +2594,15 @@ fn signalProcessGroup(pid: std.posix.pid_t, signal: std.posix.SIG) !void {
 }
 
 fn terminateRemainingProcessGroup(pid: std.posix.pid_t) void {
-    signalProcessGroup(pid, std.posix.SIG.KILL) catch |err| {
-        debug_trace.logf(
-            "core",
-            "remaining captured process group cleanup failed err={s}",
-            .{@errorName(err)},
-        );
-    };
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {} else {
+        signalProcessGroup(pid, std.posix.SIG.KILL) catch |err| {
+            debug_trace.logf(
+                "core",
+                "remaining captured process group cleanup failed err={s}",
+                .{@errorName(err)},
+            );
+        };
+    }
 }
 
 fn remainingProcessGroupAlive(process_group_id: ?std.posix.pid_t) bool {

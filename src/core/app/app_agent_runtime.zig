@@ -202,6 +202,7 @@ pub fn Runtime(comptime App: type) type {
                 provider_set.Bundle.Capabilities{};
             var ctx: tool_runtime.Context = .{
                 .workspace_root = workspace_root,
+                .interaction_mode = app_permission_runtime.Runtime(App).activeModeId(app),
                 .access_scope = if (host_workspace != null)
                     workspace_access.AccessScope.primaryOnly(workspace_root)
                 else
@@ -276,6 +277,7 @@ pub fn Runtime(comptime App: type) type {
                 .tracker = &app.change_tracker,
                 .mcp_ctx = @ptrCast(app),
                 .mcp_has_tool = if (comptime runtime_profile.allows(App, .mcp)) mcpHasTool else null,
+                .mcp_tool_read_only = if (comptime runtime_profile.allows(App, .mcp)) mcpToolReadOnly else null,
                 .mcp_validate_tool = if (comptime runtime_profile.allows(App, .mcp)) validateMcpTool else null,
                 .mcp_call_tool = if (comptime runtime_profile.allows(App, .mcp)) callMcpTool else null,
                 .mcp_search_tools = if (comptime runtime_profile.allows(App, .mcp)) searchMcpTools else null,
@@ -426,6 +428,14 @@ pub fn Runtime(comptime App: type) type {
         fn mcpHasTool(raw_ctx: *anyopaque, name: []const u8, access: tool_mcp_runtime.Access) bool {
             const app: *App = @ptrCast(@alignCast(raw_ctx));
             return app.hasMcpTool(name, access);
+        }
+
+        fn mcpToolReadOnly(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, access: tool_mcp_runtime.Access) anyerror!bool {
+            const app: *App = @ptrCast(@alignCast(raw_ctx));
+            if (comptime @hasDecl(App, "mcpToolReadOnly")) {
+                return app.mcpToolReadOnly(arena, name, access);
+            }
+            return false;
         }
 
         fn validateMcpTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, access: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.ValidationResult {
@@ -833,6 +843,7 @@ pub fn Runtime(comptime App: type) type {
                     appAccessScope(app),
                 .interactive = true,
                 .permission_mode = permission_snapshot.mode,
+                .interaction_mode = app_permission_runtime.Runtime(App).activeModeId(app),
                 .tracker = &app.change_tracker,
                 .background = &app.background,
                 .session = &app.session,
@@ -1076,6 +1087,11 @@ pub fn Runtime(comptime App: type) type {
                         .agent_stream = tool_context.agent_stream_provider,
                         .permission_reviewer = tool_context.permission_reviewer_provider,
                     },
+                    .claude = .{
+                        .capabilities = tool_context.provider_capabilities,
+                        .agent_stream = tool_context.agent_stream_provider,
+                        .permission_reviewer = tool_context.permission_reviewer_provider,
+                    },
                 };
             return subagent_agent_adapter.run(.{
                 .host = app_session_runtime.Runtime(App).subagentHost(app) orelse
@@ -1149,6 +1165,7 @@ pub fn Runtime(comptime App: type) type {
                 .effort = job.agent_settings.effort,
                 .first_call_tool_choice = job.agent_settings.first_call_tool_choice,
                 .workspace_root = app.workspace_root,
+                .interaction_mode = app_permission_runtime.Runtime(App).activeModeId(app),
                 .access_scope = appAccessScope(app),
                 .origin = if (app.session_persistence.writable) |writable|
                     if (writable.external_prompt_origin == .persistent_child) .subagent else .root

@@ -1,3 +1,6 @@
+This is the `ripgrim/fx` fork. See [Fork releases](docs/fork-releases.md) for CI
+and publishing. Upstream installation links below install upstream fx, not this fork.
+
 ```
  ⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀
  ⠀⠀⠀⠀⠀⢰⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -105,7 +108,13 @@ Foreground terminal commands run with an explicit finite deadline. fx uses durab
 
 fx starts in `auto` permission mode. Routine understood development actions run directly. Each unresolved action receives one narrow safety review based on the current user request and the exact pending action. A clear result authorizes only that action. A caution or unavailable review holds the action and returns advice to the agent without opening a permission prompt or ending the turn. See [Permissions](https://fx.sh/docs/configure-fx/permissions) for other modes and persistent rules.
 
+Press `Shift+Tab` to cycle `ask`, `auto`, `YOLO`, and purple `DESIGN` mode. The experimental Design mode installs the bundled `fx_design` helper into the profile and adds Paper's local MCP at `http://127.0.0.1:29979/mcp` when no `paper` entry exists. Existing named MCP configurations are preserved. The helper captures rendered pages through agent-browser, stores source snapshots per saved session, and prepares exact Paper operations for normal fx tool dispatch. Source captures exclude Next.js developer overlays while preserving ordinary application portals and iframes. Verification uses structured capture and artboard identities instead of confidence strings. Bun and native agent-browser must currently be installed in the same environment as fx; automatic runtime installation and verified Paper-to-code application are not implemented. See [Design mode](docs/design-mode.md) for the current limitations.
+
 JSON and quiet requests stay noninteractive by default. Add `--prompt-permissions` to allow configured approval prompts when stdin is a TTY. Automatic safety review never opens that prompt. Prompt text is written to stderr, so JSON stdout stays parseable and quiet stdout stays empty. Piped or redirected stdin remains noninteractive and fails instead of waiting for approval.
+
+Design imports checkpoint automatically after managed Paper operations. The TUI shows verification state and a review link; the first meaningful comparison opens a reusable local browser inspector that updates at subsequent checkpoints. A synchronized lightbox supports zooming and panning source, Paper, and difference images. Receipt-mapped dimension/border findings and approximate red/green pixel residuals remain distinct. Intentional design edits are recorded as changes, not automatically reverted to the import baseline.
+
+Verification ignores tiny dimension rounding (up to 1/32 CSS px) and low-intensity pixel noise (up to 16/255 per channel), consistently in the gate and overlay. Missing borders remain independently checked; small details are not discarded based on their percentage of the image.
 
 Inside a saved session, `/permissions remember <allow|deny> <tool-name> <arguments-json>` stores an exact confirmed rule without running the action. `/permissions` lists stable rule IDs, and `/permissions revoke <rule-id>` removes a stored rule even when its original workspace or file state has changed.
 

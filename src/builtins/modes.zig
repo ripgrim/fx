@@ -3,6 +3,7 @@ const std = @import("std");
 const builtin_tools = @import("tools.zig");
 const mode_contract = @import("../core/modes/mode_contract.zig");
 const mode_registry = @import("../core/modes/mode_registry.zig");
+const design_mode = @import("../core/modes/design_mode.zig");
 const tool_set_contract = @import("../core/tooling/tool_set.zig");
 const tool_projection = @import("../core/tooling/tool_projection.zig");
 
@@ -13,6 +14,7 @@ pub const default_mode_id = "ask";
 pub const all = [_]ModeSpec{
     .{ .id = "code", .name = "Code", .description = "Write and modify code with full tool access", .permission_mode = .auto },
     .{ .id = "ask", .name = "Ask", .description = "Request permission before making any changes", .permission_mode = .ask },
+    .{ .id = design_mode.id, .name = design_mode.name, .description = design_mode.description, .permission_mode = .auto },
 };
 
 pub const registry = mode_registry.Registry{
@@ -25,7 +27,7 @@ pub fn lookup(id: []const u8) ?*const ModeSpec {
 }
 
 test "built-in modes register exact ACP order and permission policy" {
-    const expected_ids = [_][]const u8{ "code", "ask" };
+    const expected_ids = [_][]const u8{ "code", "ask", design_mode.id };
     try std.testing.expectEqual(expected_ids.len, all.len);
     for (expected_ids, all) |expected, mode| {
         try std.testing.expectEqualStrings(expected, mode.id);
@@ -35,6 +37,7 @@ test "built-in modes register exact ACP order and permission policy" {
     try std.testing.expectEqualStrings(default_mode_id, registry.default_mode_id);
     try std.testing.expectEqual(@as(@TypeOf(all[0].permission_mode), .auto), lookup("code").?.permission_mode);
     try std.testing.expectEqual(@as(@TypeOf(all[1].permission_mode), .ask), lookup("ask").?.permission_mode);
+    try std.testing.expectEqual(@as(@TypeOf(all[2].permission_mode), .auto), lookup(design_mode.id).?.permission_mode);
     try std.testing.expectEqual(ToolPolicy.full, lookup("code").?.tool_policy);
     try std.testing.expectEqual(ToolPolicy.full, lookup("ask").?.tool_policy);
     try std.testing.expect(lookup("unknown") == null);

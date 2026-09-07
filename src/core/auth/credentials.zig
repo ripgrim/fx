@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const chatgpt_oauth = @import("chatgpt_oauth.zig");
 const chatgpt_session = @import("chatgpt_session.zig");
+const claude_session = @import("claude_session.zig");
 const grok_oauth = @import("grok_oauth.zig");
 const grok_session = @import("grok_session.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
@@ -25,6 +26,7 @@ pub const CatalogPublicOnly = union(enum) {
     authenticated_credential_rejected: Source,
     chatgpt_subscription,
     grok_subscription,
+    claude_subscription,
 
     fn credentialSource(self: CatalogPublicOnly) ?Source {
         return switch (self) {
@@ -34,6 +36,7 @@ pub const CatalogPublicOnly = union(enum) {
             .authenticated_credential_rejected => |source| source,
             .chatgpt_subscription => .chatgpt_subscription,
             .grok_subscription => .grok_subscription,
+            .claude_subscription => .claude_subscription,
         };
     }
 };
@@ -47,6 +50,7 @@ pub const CatalogAuthenticatedSource = enum {
     stored_key,
     chatgpt_subscription,
     grok_subscription,
+    claude_subscription,
 
     fn credentialSource(self: CatalogAuthenticatedSource) Source {
         return switch (self) {
@@ -56,6 +60,7 @@ pub const CatalogAuthenticatedSource = enum {
             .stored_key => .stored_key,
             .chatgpt_subscription => .chatgpt_subscription,
             .grok_subscription => .grok_subscription,
+            .claude_subscription => .claude_subscription,
         };
     }
 };
@@ -171,6 +176,7 @@ pub fn catalogAccessForCredentialAndAccount(
         .stored_key => .stored_key,
         .chatgpt_subscription => .chatgpt_subscription,
         .grok_subscription => .grok_subscription,
+        .claude_subscription => .claude_subscription,
         .fx_login => blk: {
             const team = team_context orelse
                 return .{ .public_only = .fx_login_team_required };
@@ -300,6 +306,10 @@ pub fn resolveForProvider(
             };
             return .{ .credential = credential };
         },
+        .claude => {
+            const credential = try loadClaudeCredential(alloc);
+            return .{ .credential = credential };
+        },
         .gateway => {},
     }
     return resolvePreferring(
@@ -307,7 +317,9 @@ pub fn resolveForProvider(
         transport,
         secret_store,
         mode,
-        if (preferred == .chatgpt_subscription or preferred == .grok_subscription) null else preferred,
+        if (preferred == .chatgpt_subscription or
+            preferred == .grok_subscription or
+            preferred == .claude_subscription) null else preferred,
     );
 }
 
@@ -414,7 +426,44 @@ pub fn loadSource(
         .stored_key => loadStoredKeyCredential(alloc, secret_store),
         .chatgpt_subscription => loadChatGptCredential(alloc, transport, .if_needed),
         .grok_subscription => loadGrokCredential(alloc, transport, .if_needed),
+        .claude_subscription => loadClaudeCredential(alloc),
     };
+}
+
+/// Claude Code owns the subscription credential, so there is no token for fx to
+/// load. This returns a tokenless credential that records *who* Claude Code is
+/// signed in as; the empty token is never sent anywhere. A login that resolves
+/// to an Anthropic API key or a Bedrock/Vertex provider is deliberately not a
+/// credential here, so the Claude route can never bill an API account.
+pub fn loadClaudeCredential(alloc: std.mem.Allocator) !?Credential {
+    var status = (try claude_session.probe(alloc, claudeExecutable())) orelse return null;
+    defer status.deinit(alloc);
+
+    if (!status.isSubscription()) return null;
+    const account_id = status.accountId() orelse return null;
+
+    const owned_account_id = try alloc.dupe(u8, account_id);
+    errdefer alloc.free(owned_account_id);
+    const token = try alloc.alloc(u8, 0);
+    return .{
+        .token = token,
+        .source = .claude_subscription,
+        .account_id = owned_account_id,
+    };
+}
+
+/// Asks the local Claude Code install who is signed in. Returns null when
+/// Claude Code is not installed. Callers own the returned status.
+pub fn probeClaudeStatus(alloc: std.mem.Allocator) !?claude_session.Status {
+    return claude_session.probe(alloc, claudeExecutable());
+}
+
+/// Claude Code binary to delegate to. `FX_CLAUDE_BINARY` overrides the default
+/// so a non-PATH or alternate install can be targeted.
+pub fn claudeExecutable() []const u8 {
+    const override = io_mod.getenv("FX_CLAUDE_BINARY") orelse return "claude";
+    if (override.len == 0) return "claude";
+    return override;
 }
 
 pub fn sourceExists(
@@ -439,6 +488,20 @@ pub fn sourceExists(
         },
         .chatgpt_subscription => chatgpt_oauth.sourceExists(alloc),
         .grok_subscription => grok_oauth.sourceExists(alloc),
+        // Presence is whatever the local Claude Code install reports; fx holds
+        // no Claude credential of its own to probe.
+        .claude_subscription => blk: {
+            var status = (claude_session.probe(alloc, claudeExecutable()) catch |err| {
+                debug_trace.logf(
+                    "auth",
+                    "source probe failed source=claude_subscription err={s}",
+                    .{@errorName(err)},
+                );
+                break :blk false;
+            }) orelse break :blk false;
+            defer status.deinit(alloc);
+            break :blk status.isSubscription();
+        },
         .stored_key => blk: {
             if (secret_store.isDisabled()) break :blk false;
             break :blk switch (secret_store.presence()) {
@@ -477,6 +540,11 @@ pub fn sourcePresence(
             secret_store.presence(),
         .chatgpt_subscription => chatgpt_session.presence(),
         .grok_subscription => grok_session.presence(),
+        // fx stores no Claude credential, so there is no file to stat. Deciding
+        // presence means asking Claude Code, which needs an allocator and a
+        // subprocess; this cheap synchronous probe cannot. `sourceExists` does
+        // the real check.
+        .claude_subscription => .unavailable,
     };
 }
 
@@ -690,6 +758,7 @@ pub fn sourceLabel(source: Source) []const u8 {
         .stored_key => "stored API key (" ++ stored_key_backend_label ++ ")",
         .chatgpt_subscription => "Codex subscription",
         .grok_subscription => "Grok subscription",
+        .claude_subscription => "Claude subscription (via Claude Code)",
     };
 }
 

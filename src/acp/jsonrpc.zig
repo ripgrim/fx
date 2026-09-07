@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../core/shared/io.zig");
 const host_target = @import("../core/hosts/target.zig");
 
@@ -304,6 +305,12 @@ pub const Reader = struct {
     // backend and let the host's fd_read import suspend through JSPI.
     fn readStdin(_: ?*anyopaque, destination: []u8) usize {
         if (comptime host_target.is_wasm) {
+            return std.Io.File.stdin().readStreaming(
+                io_mod.getIo(),
+                &.{destination},
+            ) catch return 0;
+        }
+        if (comptime builtin.os.tag == .windows) {
             return std.Io.File.stdin().readStreaming(
                 io_mod.getIo(),
                 &.{destination},

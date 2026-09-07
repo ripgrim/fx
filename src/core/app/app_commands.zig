@@ -1317,7 +1317,7 @@ pub fn Handlers(comptime App: type) type {
                 return;
             }
             const result = try app.mcpCommandProvider().handle(app.alloc, rest, .{
-                .home = io_mod.getenv("HOME"),
+                .home = io_mod.getenv("HOME") orelse io_mod.getenv("USERPROFILE"),
                 .list_ctx = @ptrCast(app),
                 .summarize_servers = summarizeMcpServers,
                 .list_servers_and_tools = listMcpServersAndTools,

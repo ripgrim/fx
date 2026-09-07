@@ -263,6 +263,7 @@ const AcpContext = struct {
         }
         var tc: tool_runtime.Context = .{
             .workspace_root = self.state.workspace_root,
+            .interaction_mode = self.captured_mode orelse session.mode,
             .access_scope = self.state.workspace_access.scope(self.state.workspace_root),
             .ignored_list_entries = self.state.cfg.ignored_list_entries,
             .max_list_entries = self.state.cfg.max_list_entries,
@@ -342,6 +343,7 @@ const AcpContext = struct {
             if (session.mcp != null) {
                 tc.mcp_ctx = @ptrCast(self);
                 tc.mcp_has_tool = mcpHasTool;
+                tc.mcp_tool_read_only = mcpToolReadOnly;
                 tc.mcp_validate_tool = mcpValidateTool;
                 tc.mcp_call_tool = mcpCallTool;
                 tc.mcp_search_tools = mcpSearchTools;
@@ -818,6 +820,7 @@ fn buildAgentConfig(state: *server.ServerState, session: *server.ActiveSessionSt
         .effort = session.effort,
         .first_call_tool_choice = session.first_call_tool_choice,
         .workspace_root = state.workspace_root,
+        .interaction_mode = session.mode,
         .access_scope = state.workspace_access.scope(state.workspace_root),
         .origin = if (session.writable) |writable|
             if (writable.external_prompt_origin == .persistent_child) .subagent else .root
@@ -1204,6 +1207,7 @@ fn appendRuntimeContext(raw_ctx: *anyopaque, arena: Allocator, messages: *std.Ar
         .access_scope = ctx.state.workspace_access.scope(ctx.state.workspace_root),
         .interactive = false,
         .permission_mode = ctx.captured_permission_mode orelse session.permission_mode,
+        .interaction_mode = ctx.captured_mode orelse session.mode,
         .tracker = null,
         .background = &ctx.state.background,
         .session = &session.session_rt,
@@ -2442,6 +2446,12 @@ fn mcpHasTool(raw_ctx: *anyopaque, name: []const u8, access: tool_mcp_runtime.Ac
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     const mcp = activeMcp(ctx) orelse return false;
     return mcp.hasToolWithAccess(name, access);
+}
+
+fn mcpToolReadOnly(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, access: tool_mcp_runtime.Access) anyerror!bool {
+    const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
+    const mcp = activeMcp(ctx) orelse return false;
+    return mcp.toolReadOnlyByNameWithAccess(arena, name, access);
 }
 
 fn mcpValidateTool(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, access: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.ValidationResult {

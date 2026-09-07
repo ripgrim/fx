@@ -483,7 +483,7 @@ fn openUsageRecoveryProfileRoot(
     errdefer profile.close(zio);
     const stat = try profile.stat(zio);
     if (stat.kind != .directory or
-        stat.permissions.toMode() & 0o777 != 0o700)
+        !io_mod.permissionsMatch(stat.permissions, 0o700))
     {
         return error.InvalidUsageRecoveryIndex;
     }
@@ -506,7 +506,7 @@ fn openUsageRecoveryDir(
     errdefer dir.close(io_mod.getIo());
     const stat = try dir.stat(io_mod.getIo());
     if (stat.kind != .directory or
-        stat.permissions.toMode() & 0o777 != 0o700)
+        !io_mod.permissionsMatch(stat.permissions, 0o700))
     {
         return error.InvalidUsageRecoveryIndex;
     }
@@ -532,7 +532,7 @@ fn validateUsageRecoveryMarker(
         stat.nlink != 1 or
         stat.size == 0 or
         stat.size > max_usage_recovery_marker_bytes or
-        stat.permissions.toMode() & 0o777 != 0o600)
+        !io_mod.permissionsMatch(stat.permissions, 0o600))
     {
         return error.InvalidUsageRecoveryIndex;
     }
@@ -4927,12 +4927,12 @@ fn loadedWriterBelongsToRoot(
 }
 
 fn prepareWritableSessionDir(dir: std.Io.Dir) !void {
-    const permissions = std.Io.File.Permissions.fromMode(0o700);
+    const permissions = io_mod.permissionsFromMode(0o700);
     dir.setPermissions(io_mod.getIo(), permissions) catch
         return error.PrivateStatePermissionsUnsupported;
     const stat = try dir.stat(io_mod.getIo());
     if (stat.kind != .directory) return error.SessionPathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o700) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }

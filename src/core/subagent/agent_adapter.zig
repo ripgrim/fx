@@ -269,6 +269,7 @@ pub fn run(
             .effort = admission.effort,
             .first_call_tool_choice = config.tool_context.first_call_tool_choice,
             .workspace_root = config.tool_context.workspace_root,
+            .interaction_mode = config.tool_context.interaction_mode,
             .access_scope = config.tool_context.access_scope,
             .origin = .subagent,
             .root_user_intent_context = prompt.root_user_intent_context,

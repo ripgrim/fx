@@ -1307,6 +1307,7 @@ pub fn Runtime(comptime App: type) type {
             ctx.statusline = .{
                 .workspace_label = base.statusline.workspace_label,
                 .git_branch = base.statusline.git_branch,
+                .mode_label = base.statusline.mode_label,
             };
             const worker_status_projection = if (app.subagents.childConversationRuntime()) |child_runtime|
                 child_runtime.worker_status_state().projection()
@@ -1392,6 +1393,13 @@ pub fn Runtime(comptime App: type) type {
             visible_model: []const u8,
         ) ui_render.StatuslineItems {
             var items: ui_render.StatuslineItems = .{};
+            if (comptime @hasField(App, "permission_state") and
+                @hasField(App, "permission_engine"))
+            {
+                if (app_permission_runtime.Runtime(App).designModeActive(app)) {
+                    items.mode_label = "DESIGN";
+                }
+            }
             if (comptime @hasField(App, "workspace_identity") and
                 @hasField(App, "workspace_root"))
             {

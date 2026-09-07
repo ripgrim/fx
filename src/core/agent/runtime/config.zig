@@ -48,6 +48,7 @@ pub const Config = struct {
     effort: ReasoningEffort = .auto,
     first_call_tool_choice: types.ToolChoice = .auto,
     workspace_root: []const u8 = "",
+    interaction_mode: []const u8 = "",
     access_scope: ?workspace_access.AccessScope = null,
     origin: TurnOrigin = .root,
     /// Root-user evidence inherited by a subagent turn. Unused for root turns.

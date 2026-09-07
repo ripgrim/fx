@@ -1,11 +1,14 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: [Full CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -14,6 +17,12 @@ concurrency:
 
 jobs:
   check-version:
+    if: >-
+      github.repository == 'ripgrim/fx' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     outputs:
       needed: ${{ steps.check.outputs.needed }}
@@ -25,7 +34,12 @@ jobs:
 
       - name: Check if release needed
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/fork_release_gate.py "$GITHUB_REPOSITORY" "$GITHUB_SHA"
           VERSION=$(grep 'pub const version' src/main.zig | head -1 | sed 's/.*"\(.*\)".*/\1/')
           if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::src/main.zig version is not strict SemVer"
@@ -99,6 +113,7 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-macos
 
       - name: Sign and notarize
+        if: vars.MACOS_SIGNING_ENABLED == 'true'
         env:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -160,6 +175,7 @@ jobs:
         run: python3 -m scripts.pgso report --output-dir "$RUNNER_TEMP/fx-pgso-aggregate" >/dev/null
 
       - name: Sign and notarize stable release candidate
+        if: vars.MACOS_SIGNING_ENABLED == 'true'
         env:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -192,6 +208,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -204,12 +221,17 @@ jobs:
 
       - name: Create git tag
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.check-version.outputs.version }}
         run: |
           set -euo pipefail
+          python3 scripts/fork_release_gate.py "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          awk '/<!-- release:start -->/{found=1; next} /<!-- release:end -->/{found=0} found{print}' CHANGELOG.md > /tmp/release-notes.md
+          test "$(wc -l < /tmp/release-notes.md)" -ge 2
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           git tag -- "$RELEASE_TAG"
           git push origin "refs/tags/${RELEASE_TAG}"
+          printf '%s\n' "$RELEASE_TAG" > latest.txt
 
       - name: Extract changelog entry
         run: |
@@ -229,8 +251,10 @@ jobs:
           files: |
             fx-*.tar.gz
             fx-*.tar.gz.sha256
+            latest.txt
 
       - name: Publish to CDN
+        if: vars.CDN_PUBLISH_ENABLED == 'true'
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           VERSION: ${{ needs.check-version.outputs.version }}

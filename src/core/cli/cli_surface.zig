@@ -666,6 +666,7 @@ fn activateProviderSelection(
             .gateway => "Gateway is already selected.\n",
             .codex => "Codex is already selected.\n",
             .grok => "Grok is already selected.\n",
+            .claude => "Claude is already selected.\n",
         });
         return true;
     }
@@ -712,6 +713,7 @@ fn activateProviderSelection(
             switch (target) {
                 .codex => "Codex credential is unavailable",
                 .grok => "Grok credential is unavailable",
+                .claude => "Claude Code is not installed or not signed in to a subscription",
                 .gateway => "configure a Gateway credential first",
             },
         );
@@ -721,6 +723,7 @@ fn activateProviderSelection(
         try writeProviderActivationError(alloc, deps, caller, switch (target) {
             .codex => "Codex model catalog is unavailable",
             .grok => "Grok model catalog is unavailable",
+            .claude => "Claude model catalog is unavailable",
             .gateway => "Gateway model catalog is unavailable",
         });
         return false;
@@ -766,13 +769,15 @@ fn activateProviderSelection(
     if (performed_login) |provider| switch (provider) {
         .codex => try writeStdout(deps, "Signed in with Codex.\n"),
         .grok => try writeStdout(deps, "Signed in with Grok.\n"),
-        .gateway => unreachable,
+        // fx never performs a Claude login, so it is never recorded as one.
+        .claude, .gateway => unreachable,
     };
     if (caller == .provider_command) {
         try writeStdout(deps, switch (target) {
             .gateway => "Provider set to Gateway.\n",
             .codex => "Provider set to Codex.\n",
             .grok => "Provider set to Grok.\n",
+            .claude => "Provider set to Claude.\n",
         });
     }
     return true;
@@ -891,7 +896,7 @@ fn runNonInteractiveWithDeps(
         .issue => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .issue),
         .login => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
-                try writeStderr(deps, "usage: fx login [vercel|codex|grok]\n");
+                try writeStderr(deps, "usage: fx login [vercel|codex|grok|claude]\n");
                 return .handled_failure;
             };
             // Preserve the original `fx login` behavior for scripts and users.
@@ -945,12 +950,52 @@ fn runNonInteractiveWithDeps(
                     }
                     try writeStdout(deps, "Signed in with Grok.\n");
                 },
+                // fx runs no Claude OAuth flow. Claude Code owns the credential,
+                // so this verifies its sign-in and points at `claude auth login`
+                // rather than prompting for one here.
+                .claude => {
+                    var status = credentials.probeClaudeStatus(alloc) catch {
+                        try writeStderr(
+                            deps,
+                            "fx login: could not run Claude Code; install it and run `claude auth login`\n",
+                        );
+                        return .handled_failure;
+                    } orelse {
+                        try writeStderr(
+                            deps,
+                            "fx login: Claude Code not found; install it and run `claude auth login`\n",
+                        );
+                        return .handled_failure;
+                    };
+                    defer status.deinit(alloc);
+
+                    if (status.usesApiKey()) {
+                        try writeStderr(
+                            deps,
+                            "fx login: Claude Code is using an Anthropic API key. " ++
+                                "The Claude provider requires a subscription; run `claude auth login`.\n",
+                        );
+                        return .handled_failure;
+                    }
+                    if (!status.isSubscription()) {
+                        try writeStderr(
+                            deps,
+                            "fx login: Claude Code is not signed in to a Claude subscription; " ++
+                                "run `claude auth login`\n",
+                        );
+                        return .handled_failure;
+                    }
+                    if (!try activateProviderSelection(alloc, cfg, deps, .claude, .provider_login)) {
+                        return .handled_failure;
+                    }
+                    try writeStdout(deps, "Using Claude through the signed-in Claude Code install.\n");
+                },
             }
             return .handled_success;
         },
         .logout => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
-                try writeStderr(deps, "usage: fx logout [vercel|codex|grok]\n");
+                try writeStderr(deps, "usage: fx logout [vercel|codex|grok|claude]\n");
                 return .handled_failure;
             };
             // Preserve the original `fx logout` behavior for scripts and users.
@@ -997,6 +1042,16 @@ fn runNonInteractiveWithDeps(
                         break :result .handled_failure;
                     },
                 };
+            }
+            // There is no fx-side Claude session to remove: Claude Code holds
+            // the credential, so signing out has to happen there.
+            if (login_provider == .claude) {
+                try writeStdout(
+                    deps,
+                    "fx stores no Claude credential; Claude Code owns it. " ++
+                        "Run `claude auth logout` to sign out.\n",
+                );
+                return .handled_success;
             }
             const result = login_flow.logout(alloc, cfg.gateway_provider.oauth_transport) catch |err| switch (err) {
                 error.SessionDeleteFailed => {
@@ -1139,6 +1194,7 @@ fn runNonInteractiveWithDeps(
                     .gateway => "fx models: Gateway model catalog is unavailable\n",
                     .codex => "fx models: Codex model catalog is unavailable\n",
                     .grok => "fx models: Grok model catalog is unavailable\n",
+                    .claude => "fx models: Claude model catalog is unavailable\n",
                 });
                 return .handled_failure;
             };
@@ -1813,11 +1869,22 @@ fn runPasteSetup(
 }
 
 fn setupTerminalAvailableDefault(_: ?*anyopaque) bool {
+    if (comptime builtin.os.tag == .windows) return false;
     return std.c.isatty(std.posix.STDIN_FILENO) != 0 and
         std.c.isatty(std.posix.STDERR_FILENO) != 0;
 }
 
 fn readMaskedKeyDefault(
+    context: ?*anyopaque,
+    alloc: Allocator,
+    write_mask: WriteFn,
+    write_ctx: ?*anyopaque,
+) ![]u8 {
+    if (comptime builtin.os.tag == .windows) return error.NotATerminal;
+    return readMaskedKeyPosix(context, alloc, write_mask, write_ctx);
+}
+
+fn readMaskedKeyPosix(
     _: ?*anyopaque,
     alloc: Allocator,
     write_mask: WriteFn,
@@ -1861,10 +1928,11 @@ fn readMaskedKeyDefault(
 }
 
 const MaskedKeyRawMode = struct {
-    original: std.posix.termios = undefined,
+    original: if (builtin.os.tag == .windows) void else std.posix.termios = undefined,
     active: bool = false,
 
     fn enable() !MaskedKeyRawMode {
+        if (comptime builtin.os.tag == .windows) return error.NotATerminal;
         if (std.c.isatty(std.posix.STDIN_FILENO) == 0 or
             std.c.isatty(std.posix.STDERR_FILENO) == 0)
         {
@@ -2196,7 +2264,7 @@ fn runTopLevelMcp(
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
             return .handled_failure;
         }
-        const home = deps.getenv(deps.env_ctx, "HOME") orelse {
+        const home = deps.getenv(deps.env_ctx, "HOME") orelse deps.getenv(deps.env_ctx, "USERPROFILE") orelse {
             try writeMcpOperationFailure(alloc, deps, "path", error.HomeNotSet);
             return .handled_failure;
         };

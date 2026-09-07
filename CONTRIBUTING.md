@@ -1,5 +1,8 @@
 # Contributing
 
+For `ripgrim/fx` CI, release credentials and publishing, see
+[Fork releases](docs/fork-releases.md).
+
 ## Scope
 
 `fx` is a CLI-first coding agent written in Zig.
@@ -32,8 +35,18 @@ Common commands:
 zig fmt src/
 zig build
 zig build test
+zig build test -Dtest-filter=esign
 zig build run
 ```
+
+The experimental Design helper is maintained in `src/core/design/`. Run its
+focused tests with `bun test src/core/design/helper.test.ts`. Its separate
+browser integration test, `bun test src/core/design/helper.browser.test.ts`,
+requires native agent-browser and Chrome. `FX_DESIGN_BROWSER` selects an exact
+browser executable. These helper checks do not replace running the built fx
+binary with a live Paper file and the target application. Current implementation
+limits are tracked in [Design mode](docs/design-mode.md). For opt-in, recorded
+agent runs against Comp and Paper, see [Live Design evaluation](docs/design-live-testing.md).
 
 ## Verification Workflow
 

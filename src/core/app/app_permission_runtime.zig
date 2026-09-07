@@ -2,6 +2,7 @@ const std = @import("std");
 const app_worker_runtime = @import("app_worker_runtime.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
+const design_mode = @import("../modes/design_mode.zig");
 const io_mod = @import("../shared/io.zig");
 const permissions = @import("../permissions/permissions.zig");
 const render_request = @import("../../ui/render_request.zig");
@@ -11,9 +12,26 @@ const worker_runtime = @import("../agent/worker_runtime.zig");
 
 pub const State = struct {
     authority_mutex: std.Io.Mutex = .init,
+    interaction_mode: InteractionMode = .ask,
     yolo_acknowledged: bool = false,
     yolo_acknowledgment_attempted: bool = false,
     yolo_warning: YoloWarning = .{},
+};
+
+pub const InteractionMode = enum {
+    ask,
+    code,
+    yolo,
+    design,
+
+    pub fn id(self: InteractionMode) []const u8 {
+        return switch (self) {
+            .ask => "ask",
+            .code => "code",
+            .yolo => "yolo",
+            .design => design_mode.id,
+        };
+    }
 };
 
 pub const yolo_warning_text = permissions.yolo_warning_text;
@@ -76,6 +94,7 @@ pub fn Runtime(comptime App: type) type {
                 app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
             }
             app.permission_engine.mode = mode;
+            app.permission_state.interaction_mode = interactionModeForPermission(mode);
             if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
                 app.permission_state.authority_mutex.unlock(io_mod.getIo());
             }
@@ -83,7 +102,30 @@ pub fn Runtime(comptime App: type) type {
             syncQueuedPermissionSnapshot(app);
         }
 
+        pub fn setProductMode(app: *App, mode_id: []const u8, permission_mode: types.PermissionMode) void {
+            setMode(app, permission_mode);
+            if (std.mem.eql(u8, mode_id, design_mode.id)) {
+                setInteractionMode(app, .design);
+                setupDesignModeBackend(app, false);
+            }
+        }
+
+        pub fn activeModeId(app: *App) []const u8 {
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
+            }
+            defer if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.unlock(io_mod.getIo());
+            };
+            return app.permission_state.interaction_mode.id();
+        }
+
+        pub fn designModeActive(app: *App) bool {
+            return std.mem.eql(u8, activeModeId(app), design_mode.id);
+        }
+
         pub fn initializeYoloWarning(app: *App) void {
+            app.permission_state.interaction_mode = interactionModeForPermission(app.permission_engine.mode);
             updateYoloWarningForMode(app);
         }
 
@@ -134,11 +176,12 @@ pub fn Runtime(comptime App: type) type {
 
         pub fn toggleMode(app: *App) !void {
             if (comptime !@hasField(App, "permission_engine")) return;
-            try selectMode(app, switch (app.permission_engine.mode) {
-                .ask => .auto,
-                .auto => .yolo,
-                .yolo => .ask,
-            });
+            switch (app.permission_state.interaction_mode) {
+                .ask => try selectMode(app, .auto),
+                .code => try selectMode(app, .yolo),
+                .yolo => try selectDesignMode(app),
+                .design => try selectMode(app, .ask),
+            }
         }
 
         pub fn reset(app: *App) !void {
@@ -146,6 +189,7 @@ pub fn Runtime(comptime App: type) type {
                 app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
             }
             app.permission_engine.mode = .ask;
+            app.permission_state.interaction_mode = .ask;
             updateYoloWarningForMode(app);
             app.permission_engine.clear(app.alloc);
             if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
@@ -156,6 +200,74 @@ pub fn Runtime(comptime App: type) type {
                 livePermissionSnapshot(app),
             );
             try finalizeModePreference(app);
+        }
+
+        fn selectDesignMode(app: *App) !void {
+            setMode(app, .auto);
+            setInteractionMode(app, .design);
+            if (comptime @hasDecl(App, "persistAcceptedInteractionMode")) {
+                try app.persistAcceptedInteractionMode(design_mode.id);
+            } else if (comptime @hasDecl(App, "persistAcceptedPermissionMode")) {
+                try app.persistAcceptedPermissionMode(.auto);
+            }
+            setupDesignModeBackend(app, true);
+            try finalizeModePreference(app);
+        }
+
+        fn setupDesignModeBackend(app: *App, announce: bool) void {
+            if (comptime !@hasDecl(App, "ensureDesignModeMcp")) return;
+            const outcome = app.ensureDesignModeMcp() catch |err| {
+                debug_trace.logf(
+                    "design_mode",
+                    "paper_mcp_setup_failed err={s}",
+                    .{@errorName(err)},
+                );
+                if (announce) writeDesignModeNotice(
+                    app,
+                    .warning,
+                    "Paper MCP setup failed. Run `/mcp add --transport http paper http://127.0.0.1:29979/mcp`, then `/mcp reload`.",
+                );
+                return;
+            };
+            if (!announce) return;
+            switch (outcome) {
+                .already_configured => {},
+                .installed => writeDesignModeNotice(
+                    app,
+                    .neutral,
+                    "Paper MCP installed; reconnecting. Keep Paper Desktop open with a file loaded.",
+                ),
+                .installed_reload_failed => writeDesignModeNotice(
+                    app,
+                    .warning,
+                    "Paper MCP installed, but reconnect failed. Run `/mcp reload`.",
+                ),
+            }
+        }
+
+        fn writeDesignModeNotice(app: *App, tone: types.NoticeTone, body: []const u8) void {
+            if (comptime !@hasDecl(App, "writeDomainNotice")) return;
+            app.writeDomainNotice(.{
+                .topic = "design",
+                .tone = tone,
+                .body = body,
+            }, true) catch |err| {
+                debug_trace.logf(
+                    "design_mode",
+                    "paper_mcp_notice_failed err={s}",
+                    .{@errorName(err)},
+                );
+            };
+        }
+
+        fn setInteractionMode(app: *App, mode: InteractionMode) void {
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.lockUncancelable(io_mod.getIo());
+            }
+            app.permission_state.interaction_mode = mode;
+            if (comptime @hasField(@TypeOf(app.permission_state), "authority_mutex")) {
+                app.permission_state.authority_mutex.unlock(io_mod.getIo());
+            }
         }
 
         fn syncQueuedPermissionSnapshot(app: *App) void {
@@ -269,6 +381,14 @@ pub fn Runtime(comptime App: type) type {
     };
 }
 
+fn interactionModeForPermission(mode: types.PermissionMode) InteractionMode {
+    return switch (mode) {
+        .ask => .ask,
+        .auto => .code,
+        .yolo => .yolo,
+    };
+}
+
 const TestWorker = struct {
     synced_mode: ?types.PermissionMode = null,
     mode_sync_count: usize = 0,
@@ -316,6 +436,8 @@ const TestApp = struct {
     permission_commit_snapshot: ?PermissionCommitSnapshot = null,
     yolo_acknowledgment_commit_count: usize = 0,
     yolo_acknowledgment_commit_succeeds: bool = true,
+    design_mcp_setup_count: usize = 0,
+    design_mcp_setup_outcome: design_mode.McpSetupOutcome = .already_configured,
 
     fn deinit(self: *TestApp) void {
         self.permission_engine.deinit(self.alloc);
@@ -338,6 +460,11 @@ const TestApp = struct {
     pub fn persistYoloAcknowledgment(self: *TestApp) bool {
         self.yolo_acknowledgment_commit_count += 1;
         return self.yolo_acknowledgment_commit_succeeds;
+    }
+
+    pub fn ensureDesignModeMcp(self: *TestApp) !design_mode.McpSetupOutcome {
+        self.design_mcp_setup_count += 1;
+        return self.design_mcp_setup_outcome;
     }
 };
 
@@ -432,7 +559,7 @@ test "failed yolo acknowledgment is attempted at most once per process" {
     try std.testing.expect(app.permission_state.yolo_warning.active);
 }
 
-test "app_permission_runtime toggleMode cycles ask auto yolo and persists" {
+test "app_permission_runtime toggleMode cycles ask auto yolo design and persists" {
     var app = TestApp{ .alloc = std.testing.allocator };
     defer app.deinit();
 
@@ -444,6 +571,7 @@ test "app_permission_runtime toggleMode cycles ask auto yolo and persists" {
     try std.testing.expectEqual(@as(usize, 1), app.permission_mode_preference_commit_count);
     try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.last_preference_permission_mode);
     try std.testing.expect(app.shell.render_requests.hasReason(.footer));
+    try std.testing.expectEqual(@as(usize, 0), app.design_mcp_setup_count);
     try std.testing.expectEqual(@as(usize, 1), app.permission_commit_snapshot.?.mode_sync_count);
     try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.permission_commit_snapshot.?.synced_mode);
 
@@ -460,10 +588,34 @@ test "app_permission_runtime toggleMode cycles ask auto yolo and persists" {
     app.shell.render_requests.clearReason(.footer);
     try Runtime(TestApp).toggleMode(&app);
 
+    try std.testing.expectEqual(types.PermissionMode.auto, app.permission_engine.mode);
+    try std.testing.expectEqualStrings("design", Runtime(TestApp).activeModeId(&app));
+    try std.testing.expect(Runtime(TestApp).designModeActive(&app));
+    try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.worker.synced_mode);
+    try std.testing.expectEqual(@as(usize, 3), app.permission_mode_preference_commit_count);
+    try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.last_preference_permission_mode);
+    try std.testing.expect(app.shell.render_requests.hasReason(.footer));
+    try std.testing.expectEqual(@as(usize, 1), app.design_mcp_setup_count);
+
+    app.shell.render_requests.clearReason(.footer);
+    try Runtime(TestApp).toggleMode(&app);
+
     try std.testing.expectEqual(types.PermissionMode.ask, app.permission_engine.mode);
     try std.testing.expectEqual(@as(?types.PermissionMode, .ask), app.worker.synced_mode);
-    try std.testing.expectEqual(@as(usize, 3), app.permission_mode_preference_commit_count);
+    try std.testing.expectEqual(@as(usize, 4), app.permission_mode_preference_commit_count);
     try std.testing.expect(app.shell.render_requests.hasReason(.footer));
+    try std.testing.expectEqual(@as(usize, 1), app.design_mcp_setup_count);
+}
+
+test "app_permission_runtime restores design as product mode with auto permissions" {
+    var app = TestApp{ .alloc = std.testing.allocator };
+    defer app.deinit();
+
+    Runtime(TestApp).setProductMode(&app, "design", .auto);
+
+    try std.testing.expectEqual(types.PermissionMode.auto, app.permission_engine.mode);
+    try std.testing.expectEqualStrings("design", Runtime(TestApp).activeModeId(&app));
+    try std.testing.expectEqual(@as(usize, 1), app.design_mcp_setup_count);
 }
 
 test "app_permission_runtime setMode syncs queued prompts without persisting" {

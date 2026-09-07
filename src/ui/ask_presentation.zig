@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assistant_presentation = @import("../core/agent/assistant_presentation.zig");
 const diff_mod = @import("../core/output/diff.zig");
 const types = @import("../core/shared/types.zig");
@@ -32,7 +33,10 @@ pub const Runtime = struct {
         user: types.UserTurn,
         no_color: bool,
     ) !Runtime {
-        const layout = zeroFooterLayout(try ui_terminal.queryLayout(std.posix.STDOUT_FILENO, 0));
+        const layout = zeroFooterLayout(if (comptime builtin.os.tag == .windows)
+            try ui_terminal.layoutFromSize(24, 80, 0)
+        else
+            try ui_terminal.queryLayout(std.posix.STDOUT_FILENO, 0));
         var terminal = shell_runtime.TerminalState{};
         const cursor = probeTerminal(&terminal, layout, no_color);
         return initConfigured(
@@ -195,6 +199,7 @@ pub const Runtime = struct {
     }
 
     fn refreshGeometry(self: *Runtime) !void {
+        if (comptime builtin.os.tag == .windows) return;
         const queried = ui_terminal.queryLayout(std.posix.STDOUT_FILENO, 0) catch return;
         const layout = zeroFooterLayout(queried);
         if (layout.rows == self.shell.layout.rows and layout.cols == self.shell.layout.cols) return;
@@ -400,6 +405,7 @@ fn probeTerminal(
     const fallback = shell_runtime.CursorPosition{ .row = layout.rows, .col = 1 };
     const fallback_light = if (no_color) false else ui_render.explicitThemeOverride() orelse false;
     ui_render.initTheme(fallback_light, null);
+    if (comptime builtin.os.tag == .windows) return fallback;
     if (std.c.isatty(std.posix.STDIN_FILENO) == 0) return fallback;
     terminal.captureOriginalTermios() catch return fallback;
     terminal.enableRawMode() catch return fallback;

@@ -2074,6 +2074,15 @@ pub fn Runtime(comptime App: type) type {
                     const server = mcpMenuProjection(app).selectedServer() orelse return true;
                     if (server.authentication == .required) {
                         try authenticateMcpMenuServer(app);
+                    } else {
+                        const feedback: []const u8 = switch (server.authentication) {
+                            .authenticated => "This MCP server is already authenticated.",
+                            .configured => "This MCP server uses configured credentials.",
+                            .none => "This MCP server does not require authentication.",
+                            .required => unreachable,
+                        };
+                        try app.mcp.setMenuFeedback(app.alloc, feedback);
+                        app.shell.render_requests.request(.footer);
                     }
                 } else if (state.screen == .confirm) {
                     if (state.confirmation_action) |action| {
@@ -5269,7 +5278,7 @@ test "app_input_runtime Tab toggles session picker scope before autocomplete" {
     try std.testing.expectEqualStrings("/sk", app.input_runtime.edit_state.input.items);
 }
 
-test "app_input_runtime Shift+Tab cycles permission mode and queued prompts" {
+test "app_input_runtime Shift+Tab cycles permission and design modes with queued prompts" {
     const alloc = std.testing.allocator;
     var app = try RoutingFakeApp.init(alloc);
     defer app.deinit();
@@ -5306,11 +5315,24 @@ test "app_input_runtime Shift+Tab cycles permission mode and queued prompts" {
     try Runtime(RoutingFakeApp).handleByte(&app, '[', 4096, 100);
     try Runtime(RoutingFakeApp).handleByte(&app, 'Z', 4096, 100);
 
+    try std.testing.expectEqual(types.PermissionMode.auto, app.permission_engine.mode);
+    try std.testing.expectEqualStrings("design", app_permission_runtime.Runtime(RoutingFakeApp).activeModeId(&app));
+    try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.worker.synced_permission_mode);
+    try std.testing.expectEqual(@as(usize, 3), app.worker.permission_mode_sync_count);
+    try std.testing.expectEqual(@as(?types.PermissionMode, .auto), app.last_preference_permission_mode);
+    try std.testing.expectEqual(@as(usize, 3), app.permission_mode_preference_commit_count);
+    try std.testing.expect(app.shell.render_requests.hasReason(.footer));
+
+    app.shell.render_requests.clearReason(.footer);
+    try Runtime(RoutingFakeApp).handleByte(&app, 0x1b, 4096, 100);
+    try Runtime(RoutingFakeApp).handleByte(&app, '[', 4096, 100);
+    try Runtime(RoutingFakeApp).handleByte(&app, 'Z', 4096, 100);
+
     try std.testing.expectEqual(types.PermissionMode.ask, app.permission_engine.mode);
     try std.testing.expectEqual(@as(?types.PermissionMode, .ask), app.worker.synced_permission_mode);
-    try std.testing.expectEqual(@as(usize, 3), app.worker.permission_mode_sync_count);
+    try std.testing.expectEqual(@as(usize, 4), app.worker.permission_mode_sync_count);
     try std.testing.expectEqual(@as(?types.PermissionMode, .ask), app.last_preference_permission_mode);
-    try std.testing.expectEqual(@as(usize, 3), app.permission_mode_preference_commit_count);
+    try std.testing.expectEqual(@as(usize, 4), app.permission_mode_preference_commit_count);
     try std.testing.expect(app.shell.render_requests.hasReason(.footer));
 }
 

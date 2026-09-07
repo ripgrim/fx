@@ -3869,6 +3869,28 @@ fn removeServerToolNames(
     }
 }
 
+fn toolAnnotationsReadOnly(alloc: Allocator, annotations: ?[]const u8) !bool {
+    const json = annotations orelse return false;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const hint = parsed.value.object.get("readOnlyHint") orelse return false;
+    return hint == .bool and hint.bool;
+}
+
+test "MCP annotations expose explicit boolean flag" {
+    try std.testing.expect(try toolAnnotationsReadOnly(
+        std.testing.allocator,
+        "{\"readOnlyHint\":true}",
+    ));
+    try std.testing.expect(!try toolAnnotationsReadOnly(
+        std.testing.allocator,
+        "{\"readOnlyHint\":false}",
+    ));
+    try std.testing.expect(!try toolAnnotationsReadOnly(std.testing.allocator, "{}"));
+    try std.testing.expect(!try toolAnnotationsReadOnly(std.testing.allocator, null));
+}
+
 pub const McpRuntime = struct {
     alloc: Allocator,
     generation: u64,
@@ -5952,6 +5974,19 @@ pub const McpRuntime = struct {
         operation_access.refresh() catch return false;
         operation_access.authorize(.{ .tool = name }) catch return false;
         return true;
+    }
+
+    pub fn toolReadOnlyByNameWithAccess(
+        self: *McpRuntime,
+        alloc: Allocator,
+        name: []const u8,
+        access: tool_mcp_runtime.Access,
+    ) !bool {
+        if (!self.hasToolWithAccess(name, access)) return false;
+        self.catalog_mutex.lockSharedUncancelable(io_mod.getIo());
+        defer self.catalog_mutex.unlockShared(io_mod.getIo());
+        const found = self.lookupCallableTool(name) orelse return false;
+        return toolAnnotationsReadOnly(alloc, found.tool.annotations_json);
     }
 
     pub fn serverToolFreshness(self: *McpRuntime, name: []const u8) ?ToolFreshness {

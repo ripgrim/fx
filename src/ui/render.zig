@@ -54,6 +54,7 @@ pub var approval_button_inactive_style: []const u8 = "\x1b[48;5;239m\x1b[38;5;25
 pub var selected_completion_style: []const u8 = "\x1b[1;38;5;255m";
 // Statusbar permissions "auto": a step brighter than the statusline gray.
 pub var permission_auto_style: []const u8 = "\x1b[38;5;252m";
+pub var design_mode_style: []const u8 = "\x1b[1;38;5;141m";
 var active_terminal_background: ?TerminalRgb = null;
 
 var truecolor_enabled: bool = true;
@@ -84,6 +85,7 @@ pub fn initTheme(light: bool, terminal_bg: ?TerminalRgb) void {
         approval_button_inactive_style = "\x1b[48;5;251m\x1b[38;5;237m";
         selected_completion_style = "\x1b[1;38;5;235m";
         permission_auto_style = "\x1b[38;5;238m";
+        design_mode_style = "\x1b[1;38;5;91m";
     } else {
         divider_style = "\x1b[38;5;240m";
         hint_style = "\x1b[38;5;255m";
@@ -102,6 +104,7 @@ pub fn initTheme(light: bool, terminal_bg: ?TerminalRgb) void {
         approval_button_inactive_style = "\x1b[48;5;239m\x1b[38;5;255m";
         selected_completion_style = "\x1b[1;38;5;255m";
         permission_auto_style = "\x1b[38;5;252m";
+        design_mode_style = "\x1b[1;38;5;141m";
     }
 
     // The diff marker green/red reads the same on light and dark, so it is set
@@ -210,6 +213,7 @@ pub const StatuslineItems = struct {
     context_used: u64 = 0,
     context_total: ?u32 = null,
     session_title: ?[]const u8 = null,
+    mode_label: ?[]const u8 = null,
 };
 
 /// Cell budget for the session title segment. The title is capped at 8 words
@@ -409,7 +413,10 @@ pub fn buildHintLine(
     var model_buf: [96]u8 = undefined;
     const model_label = compactModelLabel(model, &model_buf);
     var permission_buf: [64]u8 = undefined;
-    const permission_label = permissionModeStatusLabel(permission_mode, &permission_buf);
+    const permission_label = if (statusline.mode_label) |mode_label|
+        std.fmt.bufPrint(&permission_buf, "{s}{s}{s}", .{ design_mode_style, mode_label, statusline_style }) catch mode_label
+    else
+        permissionModeStatusLabel(permission_mode, &permission_buf);
 
     var end: usize = 0;
     if (!awaiting_permission and !has_api_key) {
@@ -1129,6 +1136,20 @@ test "buildHintLine renders yolo uppercase with subdued permission styling" {
         std.testing.allocator,
         "{s}YOLO{s} · gpt-4o",
         .{ permission_auto_style, statusline_style },
+    );
+    defer std.testing.allocator.free(expected);
+
+    try std.testing.expectEqualStrings(expected, line);
+}
+
+test "buildHintLine renders design mode in purple" {
+    initTheme(false, null);
+    var buf: [128]u8 = undefined;
+    const line = buildHintLine(false, false, true, "openai/gpt-4o", .auto, 0, null, false, false, .auto, false, .{ .mode_label = "DESIGN" }, 80, &buf);
+    const expected = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}DESIGN{s} · gpt-4o",
+        .{ design_mode_style, statusline_style },
     );
     defer std.testing.allocator.free(expected);
 

@@ -252,6 +252,7 @@ pub const TransientContextInput = struct {
     access_scope: ?workspace_access.AccessScope = null,
     interactive: bool,
     permission_mode: types.PermissionMode,
+    interaction_mode: []const u8 = "ask",
     tracker: ?*change_tracker.ChangeTracker,
     background: *background_runtime.BackgroundRuntime,
     session: *session_runtime.SessionRuntime,

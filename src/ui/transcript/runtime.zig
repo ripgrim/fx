@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 const display_width = @import("../../core/shared/display_width.zig");
 const input_action = @import("../../core/input/input_action.zig");
@@ -4111,7 +4112,7 @@ const CompactTranscriptSourceCache = struct {
 };
 
 pub const TranscriptRuntime = struct {
-    stdout_file: std.Io.File = std.Io.File.stdout(),
+    stdout_file: std.Io.File = if (builtin.os.tag == .windows) undefined else std.Io.File.stdout(),
     sync_updates_enabled: bool = true,
     history_reset_uses_ris: bool = false,
     layout: Layout = undefined,
@@ -4286,6 +4287,7 @@ pub const TranscriptRuntime = struct {
 
     pub noinline fn init() TranscriptRuntime {
         var result: TranscriptRuntime = .{
+            .stdout_file = std.Io.File.stdout(),
             .compact_transcript_source_cache = undefined,
         };
         for (&result.compact_transcript_source_cache.entries) |*entry| {

@@ -64,8 +64,8 @@ pub const AlternateScreenOwner = enum {
 };
 
 pub const TerminalState = struct {
-    stdin_fd: std.posix.fd_t = std.posix.STDIN_FILENO,
-    original_termios: std.posix.termios = undefined,
+    stdin_fd: if (builtin.os.tag == .windows) void else std.posix.fd_t = if (builtin.os.tag == .windows) {} else std.posix.STDIN_FILENO,
+    original_termios: if (builtin.os.tag == .windows) void else std.posix.termios = undefined,
     raw_enabled: bool = false,
     alternate_screen_owner: AlternateScreenOwner = .none,
     alternate_frame_layout: frame_layout.CommittedLayoutSnapshot = .{},
@@ -94,21 +94,37 @@ pub const TerminalState = struct {
     }
 
     pub fn ensureInteractive(self: TerminalState) !void {
-        if (comptime builtin.os.tag == .wasi) return;
-        if (std.c.isatty(self.stdin_fd) == 0 or std.c.isatty(std.posix.STDOUT_FILENO) == 0) {
-            return error.NotATerminal;
+        if (comptime builtin.os.tag == .wasi) {
+            return;
+        } else if (comptime builtin.os.tag == .windows) {
+            if (!(std.Io.File.stdin().isTty(io_mod.getIo()) catch false) or
+                !(std.Io.File.stdout().isTty(io_mod.getIo()) catch false))
+            {
+                return error.NotATerminal;
+            }
+        } else {
+            if (std.c.isatty(self.stdin_fd) == 0 or std.c.isatty(std.posix.STDOUT_FILENO) == 0) {
+                return error.NotATerminal;
+            }
         }
     }
 
     pub fn captureOriginalTermios(self: *TerminalState) !void {
-        if (comptime builtin.os.tag == .wasi) return;
-        self.original_termios = try std.posix.tcgetattr(self.stdin_fd);
+        if (comptime builtin.os.tag == .wasi) {
+            return;
+        } else if (comptime builtin.os.tag == .windows) {
+            return error.Unsupported;
+        } else {
+            self.original_termios = try std.posix.tcgetattr(self.stdin_fd);
+        }
     }
 
     pub fn enableRawMode(self: *TerminalState) !void {
         if (comptime builtin.os.tag == .wasi) {
             self.raw_enabled = true;
             return;
+        } else if (comptime builtin.os.tag == .windows) {
+            return error.Unsupported;
         }
         var raw = self.original_termios;
 
@@ -141,7 +157,7 @@ pub const TerminalState = struct {
 
     pub fn disableRawMode(self: *TerminalState) void {
         if (!self.raw_enabled) return;
-        if (comptime builtin.os.tag != .wasi) {
+        if (comptime builtin.os.tag != .wasi and builtin.os.tag != .windows) {
             std.posix.tcsetattr(self.stdin_fd, .FLUSH, self.original_termios) catch {};
         }
         self.raw_enabled = false;
@@ -173,6 +189,8 @@ pub const TerminalState = struct {
     pub fn queryLayout(self: TerminalState, footer_rows: u16) !Layout {
         return if (comptime builtin.os.tag == .wasi)
             wasm_terminal.queryLayout(footer_rows)
+        else if (comptime builtin.os.tag == .windows)
+            ui_terminal.layoutFromSize(24, 80, footer_rows)
         else
             ui_terminal.queryLayout(self.stdin_fd, footer_rows);
     }
@@ -252,8 +270,11 @@ pub const TerminalState = struct {
     pub fn read(self: TerminalState, out: []u8) !usize {
         if (comptime builtin.os.tag == .wasi) {
             return std.Io.File.stdin().readStreaming(io_mod.getIo(), &.{out});
+        } else if (comptime builtin.os.tag == .windows) {
+            return std.Io.File.stdin().readStreaming(io_mod.getIo(), &.{out});
+        } else {
+            return std.posix.read(self.stdin_fd, out);
         }
-        return std.posix.read(self.stdin_fd, out);
     }
 
     pub fn pollInput(self: TerminalState, timeout_ms: i32) !PollResult {
@@ -263,6 +284,9 @@ pub const TerminalState = struct {
                 -1 => .{ .hung_up = true },
                 else => .{},
             };
+        } else if (comptime builtin.os.tag == .windows) {
+            if (timeout_ms > 0) io_mod.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            return .{};
         }
         var fds = [_]std.posix.pollfd{.{
             .fd = self.stdin_fd,

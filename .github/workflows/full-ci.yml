@@ -2,9 +2,9 @@ name: Full CI
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
-    branches-ignore:
-      - main
+    branches: ['**']
 
 concurrency:
   group: full-ci-${{ github.ref }}
@@ -15,6 +15,13 @@ permissions:
   contents: read
 
 jobs:
+  release-contract:
+    name: Fork release gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 -m unittest discover -s scripts -p fork_release_gate_test.py
+
   native:
     name: Native checks (${{ matrix.optimize }}, ${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}

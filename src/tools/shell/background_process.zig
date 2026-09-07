@@ -54,6 +54,15 @@ const OwnedState = struct {
 };
 
 fn spawnPrepared(
+    context: ?*anyopaque,
+    alloc: Allocator,
+    request: background_process_provider.SpawnRequest,
+) background_process_provider.ProviderError!background_process_provider.PreparedProcess {
+    if (comptime builtin.os.tag == .windows) return error.Unsupported;
+    return spawnPreparedPosix(context, alloc, request);
+}
+
+fn spawnPreparedPosix(
     _: ?*anyopaque,
     alloc: Allocator,
     request: background_process_provider.SpawnRequest,
@@ -245,15 +254,15 @@ fn captureToken(
     alloc: Allocator,
     pid_text: []const u8,
 ) background_process_provider.ProviderError!process_supervisor.ProcessInstanceToken {
-    const pid = std.fmt.parseInt(std.posix.pid_t, pid_text, 10) catch
-        return error.InvalidPid;
     return switch (builtin.os.tag) {
-        .linux => captureLinuxToken(alloc, pid) catch |err| switch (err) {
+        .linux => captureLinuxToken(alloc, std.fmt.parseInt(std.posix.pid_t, pid_text, 10) catch
+            return error.InvalidPid) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.ProcessNotFound => error.ProcessNotFound,
             else => error.ProcessIdentityUnavailable,
         },
-        .macos => captureMacOSToken(pid) catch |err| switch (err) {
+        .macos => captureMacOSToken(std.fmt.parseInt(std.posix.pid_t, pid_text, 10) catch
+            return error.InvalidPid) catch |err| switch (err) {
             error.ProcessNotFound => error.ProcessNotFound,
             else => error.ProcessIdentityUnavailable,
         },
@@ -467,6 +476,16 @@ const PidPair = struct {
 };
 
 fn signalProcess(
+    context: ?*anyopaque,
+    alloc: Allocator,
+    pid_text: []const u8,
+    expected: process_supervisor.ProcessInstanceToken,
+) background_process_provider.ProviderError!void {
+    if (comptime builtin.os.tag == .windows) return error.Unsupported;
+    return signalProcessPosix(context, alloc, pid_text, expected);
+}
+
+fn signalProcessPosix(
     context: ?*anyopaque,
     alloc: Allocator,
     pid_text: []const u8,
