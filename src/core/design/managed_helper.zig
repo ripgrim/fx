@@ -270,6 +270,16 @@ pub fn recordResult(
     defer writer.deinit();
     const paper_json = try resultJson(alloc, paper_output);
     defer alloc.free(paper_json);
+    // Retain the complete host-observed receipt before any downstream RPC or
+    // model-facing truncation. Recovery never repeats the Paper mutation.
+    if (proof.value.operation_hash.len != 64) return error.InvalidDesignOperation;
+    for (proof.value.operation_hash) |byte| if (!std.ascii.isHex(byte)) return error.InvalidDesignOperation;
+    if (proof.value.capture_id.len == 0 or proof.value.capture_id.len > 100) return error.InvalidDesignOperation;
+    for (proof.value.capture_id) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-' and byte != '_') return error.InvalidDesignOperation;
+    const receipt_path = try std.fmt.allocPrint(alloc, "{s}/design/{s}-{s}.receipt", .{ directory, proof.value.capture_id, proof.value.operation_hash });
+    defer alloc.free(receipt_path);
+    try std.Io.Dir.cwd().createDirPath(io_mod.getIo(), std.fs.path.dirname(receipt_path).?);
+    try io_mod.writeFileAtomic(alloc, receipt_path, paper_json);
     try std.json.Stringify.value(.{
         .capture_id = proof.value.capture_id,
         .operation_hash = proof.value.operation_hash,

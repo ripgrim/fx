@@ -557,7 +557,7 @@ export function threeWay(base: Json, canvas: Json, source: Json) {
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
-  tool("discover", "Discover source files, styles and assets. Supply the current workspace and fx session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
+  tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a rendered page including its shell. Stores exact assets and measured styles; unsupported features are explicit findings.", { workspace: string, session_directory: string, url: string, selector: string, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
   tool("prepare_import", "Prepare a captured page import. Call execute with each pending operation hash; fx sends the stored payload and records the real result.", { session_directory: string, capture_id: string, file_id: string }, ["session_directory", "capture_id"], false),
@@ -672,6 +672,14 @@ export class Adapter {
       return operation;
     }
     if (name === "check" || name === "verify") {
+      for (const operation of record.operations.filter(operation => operation.status === "started")) {
+        if (!/^[a-f0-9]{64}$/.test(operation.hash)) throw new Error("Invalid receipt identity");
+        let receipt: string;
+        try { receipt = await readFile(join(store.directory, `${record.id}-${operation.hash}.receipt`), "utf8"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+        await this.call("record_result", { session_directory: directory, capture_id: record.id, operation_hash: operation.hash, result_json: receipt });
+        Object.assign(record, await store.load(record.id));
+      }
       if (record.operations.some(operation => operation.status !== "applied")) {
         const inspector = await this.publish(store, record, "building", "Import section is still being built; differences are not failures yet.");
         if (name === "check") return { version: VERSION, status: "pending", capture_id: record.id, source_revision: record.source_revision, inspector, message: "Record the Paper result, then verify the completed operation group." };
@@ -787,7 +795,7 @@ export class Adapter {
     if (name === "record_result") {
       const operation = record.operations.find(operation => operation.hash === args.operation_hash);
       if (!operation) throw new Error("Unknown import operation");
-      if (operation.status === "applied") return { version: VERSION, status: "already-recorded", capture_id: record.id, operations: record.operations };
+      if (operation.status === "applied") return { version: VERSION, status: "already-recorded", capture_id: record.id };
       if (operation.status !== "started") throw new Error("Operation was not admitted by fx");
       const result = JSON.parse(args.result_json);
       if (!result || typeof result !== "object" || result.isError || result.error) throw new Error("Paper did not return a successful structured result");
@@ -813,7 +821,7 @@ export class Adapter {
       operation.status = "applied";
       operation.result = result;
       await this.publish(store, record, record.operations.some(operation => operation.status !== "applied") ? "building" : "outdated", "Paper changed; waiting for the host checkpoint.");
-      return { version: VERSION, status: "recorded", capture_id: record.id, artboard_id: record.artboard_id, operations: record.operations };
+      return { version: VERSION, status: "recorded", capture_id: record.id, artboard_id: record.artboard_id };
     }
     if (name === "compare") {
       const current = await inventory(record.workspace);

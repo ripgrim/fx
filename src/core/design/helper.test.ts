@@ -221,11 +221,16 @@ describe("persistent design workflow", () => {
       await adapter.call("preflight", { session_directory: directory, paperTool: operation.tool, argumentsJson: JSON.stringify(operation.arguments) });
       await expect(adapter.call("resolve_operation", args)).rejects.toThrow("next pending");
       await expect(adapter.call("record_result", { ...args, result_json: '{"error":"failed"}' })).rejects.toThrow("successful");
-      await adapter.call("record_result", { ...args, result_json: '{"id":"board"}' });
+      // Simulate interruption between the host's durable receipt and its RPC.
+      await writeFile(join(store.directory, `${source.id}-${digest(operation)}.receipt`), '{"id":"board"}');
+      const recovered = await new Adapter().call("check", args);
+      expect(recovered.status).toBe("pending");
       const saved = await new Store(join(directory, "design")).load(source.id);
       expect(saved.operations[0]?.result).toEqual({ id: "board" });
       expect(saved.operations[1]?.arguments.html).toContain("A &amp; B");
-      expect((await new Adapter().call("record_result", { ...args, result_json: '{"id":"board"}' })).status).toBe("already-recorded");
+      const acknowledgement = await new Adapter().call("record_result", { ...args, result_json: '{"id":"board"}' });
+      expect(acknowledgement.status).toBe("already-recorded");
+      expect(acknowledgement.operations).toBeUndefined();
       expect((await store.load(source.id)).operations).toHaveLength(2);
     } finally { await rm(directory, { recursive: true }); }
   });

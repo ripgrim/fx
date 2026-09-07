@@ -446,6 +446,10 @@ pub fn executeToolCallAuthorized(
         try std.json.Stringify.value(operation.value.arguments, .{}, &payload.writer);
         var effective_request = request;
         effective_request.call = .{ .id = request.call.id, .name = operation.value.tool, .arguments_json = payload.written() };
+        // Host-resolved payloads need schema validation and permission, not a
+        // second model discovery step. MCP access scopes remain unchanged.
+        execution_ctx.advertised_dynamic_tool_names = &.{operation.value.tool};
+        effective_request.advertised_dynamic_tool_names = execution_ctx.advertised_dynamic_tool_names;
         switch (try resolveToolDispatchPrelude(execution_ctx, request.result_allocator, effective_request.call, false)) {
             .completed => |failure| return failure,
             else => {},
@@ -465,7 +469,14 @@ pub fn executeToolCallAuthorized(
         effective_request.authority = permission.execution_authority orelse .ordinary;
         effective_request.classification_complete = false;
         effective_request.command_replay_capture = null;
-        return executeToolCallAuthorized(execution_ctx, effective_request);
+        // Preserve the actual Paper response through receipt recording. Bound
+        // the model-facing text only after the host transaction finishes.
+        effective_request.max_tool_result_bytes = 32 * 1024 * 1024;
+        var executed = try executeToolCallAuthorized(execution_ctx, effective_request);
+        const display = @import("tool_result_limits.zig").prepareModelOutput(request.result_allocator, request.call.name, executed.model_output, request.max_tool_result_bytes) catch return executed;
+        request.result_allocator.free(@constCast(executed.model_output));
+        executed.model_output = display;
+        return executed;
     }
     var source_validated = false;
     var design_proof: ?[]u8 = null;
@@ -7331,6 +7342,7 @@ const McpFixture = struct {
     };
 
     const DesignCheckpointContext = struct {
+        large_result: bool = false,
         preflight_calls: usize = 0,
         paper_calls: usize = 0,
         check_calls: usize = 0,
@@ -7384,7 +7396,7 @@ const McpFixture = struct {
         return error.McpFixtureFailure;
     }
 
-    fn callDesignCheckpoint(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, _: usize, _: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
+    fn callDesignCheckpoint(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, max_bytes: usize, _: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
         const ctx: *DesignCheckpointContext = @ptrCast(@alignCast(raw_ctx));
         if (std.mem.eql(u8, name, "mcp_fx_design_resolve_operation")) {
             return .{ .model_output = try arena.dupe(u8, "{\"tool\":\"mcp_paper_write_html\",\"arguments\":{\"fileId\":\"file-1\",\"targetNodeId\":\"node-1\",\"html\":\"<div>Exact stored payload</div>\",\"mode\":\"insert-children\"}}") };
@@ -7395,13 +7407,14 @@ const McpFixture = struct {
         }
         if (std.mem.eql(u8, name, "mcp_paper_write_html")) {
             ctx.paper_calls += 1;
-            return .{ .model_output = try arena.dupe(u8, "{\"createdNodes\":[]}") };
+            try std.testing.expect(max_bytes >= 32 * 1024 * 1024);
+            return .{ .model_output = try arena.dupe(u8, if (ctx.large_result) "{\"createdNodes\":[],\"padding\":\"" ++ "x" ** (80 * 1024) ++ "\"}" else "{\"createdNodes\":[]}") };
         }
         if (std.mem.eql(u8, name, "mcp_fx_design_record_result")) {
             ctx.receipt_calls += 1;
             var receipt = try std.json.parseFromSlice(std.json.Value, arena, arguments_json, .{});
             defer receipt.deinit();
-            try std.testing.expectEqualStrings("{\"createdNodes\":[]}", receipt.value.object.get("result_json").?.string);
+            try std.testing.expectEqualStrings(if (ctx.large_result) "{\"createdNodes\":[],\"padding\":\"" ++ "x" ** (80 * 1024) ++ "\"}" else "{\"createdNodes\":[]}", receipt.value.object.get("result_json").?.string);
             return .{ .model_output = try arena.dupe(u8, "{\"status\":\"recorded\"}") };
         }
         if (std.mem.eql(u8, name, "mcp_fx_design_check")) {
@@ -7596,7 +7609,7 @@ test "Design mode executes stored payloads and records actual Paper results" {
     try setTestHome(test_home);
     defer setTestHome(null) catch {};
     var checkpoint = McpFixture.DesignCheckpointContext{};
-    const advertised = [_][]const u8{ "mcp_paper_write_html", "mcp_fx_design_execute" };
+    const advertised = [_][]const u8{"mcp_fx_design_execute"};
     var rt = TestRuntime{
         .interaction_mode = design_mode.id,
         .mcp_ctx = @ptrCast(&checkpoint),
@@ -7632,6 +7645,11 @@ test "Design mode executes stored payloads and records actual Paper results" {
     const denied = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "denied", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
     try std.testing.expectEqualStrings("DesignOperationPermissionDenied", denied.status_detail.?);
     try std.testing.expectEqual(@as(usize, 1), checkpoint.paper_calls);
+    execution_context.permission_rules = .{};
+    checkpoint.large_result = true;
+    const large = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "large", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
+    try std.testing.expectEqual(@as(usize, 2), checkpoint.receipt_calls);
+    try std.testing.expect(large.model_output.len <= rt.max_tool_result_bytes);
 }
 
 test "MCP execution binds the last live action generation before transport" {

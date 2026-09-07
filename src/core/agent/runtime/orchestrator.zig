@@ -82,7 +82,7 @@ const PromptFinishTrace = runtime_finalization.PromptFinishTrace;
 const ToolExecutionResult = runtime_tool_contracts.ToolExecutionResult;
 
 const design_completion_gate_prompt =
-    "Design completion gate: verify the current artboard through mcp_fx_design_verify. Import verification checks source fidelity; design verification records intentional changes. Report unresolved findings and do not claim applied-code fidelity without comparing the current code to Paper.";
+    "Design completion gate: verify the current artboard through mcp_fx_design_verify once if it has not been attempted since the latest change. If verification is blocked or already failed without a state change, stop and report the blocker concisely; do not repeat the same call or claim fidelity. Import verification checks source fidelity; design verification records intentional changes.";
 
 fn designFinalVerificationRequired(mode_id: []const u8, messages: []const ChatMessage) bool {
     var required = false;
@@ -98,6 +98,19 @@ fn designFinalVerificationRequired(mode_id: []const u8, messages: []const ChatMe
         );
     }
     return required;
+}
+
+fn design_verification_attempted(messages: []const ChatMessage) bool {
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        const message = messages[index];
+        if (message.role != .tool) continue;
+        const name = message.tool_name orelse continue;
+        if (std.mem.eql(u8, name, "mcp_fx_design_verify")) return true;
+        if (design_mode.isPaperMutationTool(name) or std.mem.eql(u8, name, "mcp_fx_design_execute") or std.mem.eql(u8, name, "mcp_fx_design_prepare_import") or std.mem.eql(u8, name, "mcp_fx_design_prepare_edit")) return false;
+    }
+    return false;
 }
 
 test "Design completion gate tracks the latest Paper mutation and strict verify" {
@@ -123,6 +136,8 @@ test "Design completion gate tracks the latest Paper mutation and strict verify"
     try std.testing.expect(designFinalVerificationRequired(design_mode.id, &.{ mutation, failed_verify }));
     try std.testing.expect(!designFinalVerificationRequired(design_mode.id, &.{ mutation, clean_verify }));
     try std.testing.expect(!designFinalVerificationRequired("code", &.{mutation}));
+    try std.testing.expect(design_verification_attempted(&.{ mutation, failed_verify }));
+    try std.testing.expect(!design_verification_attempted(&.{ failed_verify, mutation }));
 }
 
 fn append_post_tool_decision_prompt(
@@ -3348,6 +3363,7 @@ fn processQueuedPromptLoop(
     defer interrupted_persisted_ptr.* = interrupted_persisted;
     var silent_tool_steps: usize = 0;
     var continuation_injected = false;
+    var design_completion_gate_injected = false;
     var last_step_ctx = finish_trace.ctx;
     var current_step_index: usize = 0;
     var last_tool_call_name: []const u8 = "none";
@@ -5142,9 +5158,12 @@ fn processQueuedPromptLoop(
             const has_content =
                 std.mem.trim(u8, partial_assistant, " \t\r\n").len > 0;
             if (disposition == .completed and
+                !design_completion_gate_injected and
+                !design_verification_attempted(within_turn_suffix.items) and
                 designFinalVerificationRequired(config.interaction_mode, within_turn_suffix.items) and
                 agent_steps.allowsStep(config.agent_step_limit, step + 1))
             {
+                design_completion_gate_injected = true;
                 try within_turn_suffix.append(arena, .{ .role = .assistant, .content = completion.content });
                 try within_turn_suffix.append(arena, .{
                     .role = .user,

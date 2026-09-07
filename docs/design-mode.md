@@ -108,6 +108,18 @@ codebase → editable Paper design → verified codebase workflow.
 
 ## Diff shortcut
 
+Managed execution resolves the underlying Paper tool without a separate model
+selection step. Its schema, MCP access scope and exact-action permission checks
+still apply. Complete Paper receipts have a bounded 32 MiB host budget and are
+saved per capture and operation before acknowledgement; model output keeps its
+configured text limit. Check/verify can finish recording a retained receipt after
+interruption without reissuing the Paper mutation. Old truncated receipts cannot
+be reconstructed by this recovery path and remain explicitly blocked.
+
+The completion gate does not force another call after verification has already
+been attempted for the current mutation. If verification was omitted, it supplies
+at most one reminder per turn. A blocked turn may end without claiming fidelity.
+
 When a checkpoint preview is available, the footer shows `Diff ready · ctrl+d to open`.
 Press Ctrl+D to open that checkpoint in your browser without changing your draft.
 Building/checking checkpoints do not enable the shortcut. Without a ready preview,

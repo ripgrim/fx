@@ -25,6 +25,38 @@ import {
 
 const MODEL = "openai/gpt-5";
 
+test.skipIf(!tmuxAvailable())("design completion gate stops after one blocked continuation", async () => {
+  const root = createRoot("design-blocked", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const server = config.mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = "import_source";
+  writeFileSync(configPath, JSON.stringify({ mcp: { design: server } }));
+  gateway = startFakeGateway([
+    fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_design_import_source" }),
+    fakeGatewayToolCall("import", "mcp_design_import_source", { text: "fixture" }),
+    fakeGatewayFinalText("Verification is blocked."),
+    fakeGatewayFinalText("Stopped: receipt recovery requires host evidence."),
+  ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) {
+    await tui.sendKeys("BTab");
+    await Bun.sleep(200);
+  }
+  await tui.waitForText("DESIGN");
+  await tui.sendText("Import the fixture and stop if verification cannot proceed.");
+  await tui.waitForText("Stopped: receipt recovery requires host evidence.", 30_000);
+  await Bun.sleep(1000);
+  expect(gateway.requests).toHaveLength(4);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c");
+  await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 60_000);
+
 test.skipIf(!tmuxAvailable())("design diff shortcut opens the latest preview without consuming the draft", async () => {
   const root = createRoot("diff-shortcut", LEGACY_FIXTURE);
   const configPath = join(root.home, ".fx", "mcp.json");
