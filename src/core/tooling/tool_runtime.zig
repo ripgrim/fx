@@ -705,6 +705,13 @@ pub fn executeToolCallAuthorized(
             result.interactive_notice = .{ .topic = "design verification", .tone = .information, .body = notice };
         }
     }
+    if (result.status == .success and std.mem.eql(u8, request.call.name, "mcp_fx_design_diff")) {
+        const json = design_helper.resultJson(request.result_allocator, result.model_output) catch try request.result_allocator.dupe(u8, "{}");
+        defer request.result_allocator.free(json);
+        if (try design_helper.diffResultNotice(request.result_allocator, json)) |notice| {
+            result.interactive_notice = .{ .topic = "diff", .tone = .information, .body = notice };
+        }
+    }
     const ok = switch (result.status) {
         .success => true,
         else => false,

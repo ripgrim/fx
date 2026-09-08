@@ -179,6 +179,17 @@ pub fn checkpointArguments(alloc: std.mem.Allocator, proof_json: []const u8) ![]
 
 /// Only the bundled helper can request this task-bound browser surface.
 /// Caller owns the notice. The link is also the reopen action in the transcript.
+pub fn diffResultNotice(alloc: std.mem.Allocator, output: []const u8) !?[]u8 {
+    const Result = struct { status: []const u8 = "", url: ?[]const u8 = null };
+    var parsed = std.json.parseFromSlice(Result, alloc, output, .{ .ignore_unknown_fields = true }) catch return null;
+    defer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.value.status, "ready")) return null;
+    return diffNotice(alloc, parsed.value.url orelse return null) catch |err| switch (err) {
+        error.InvalidDiffUrl => null,
+        else => return err,
+    };
+}
+
 pub fn inspectorNotice(alloc: std.mem.Allocator, output: []const u8, interactive: bool) !?[]u8 {
     const View = struct { state: []const u8, url: []const u8, auto_open: bool = false, unavailable: bool = false };
     const Envelope = struct { inspector: ?View = null };
@@ -348,6 +359,15 @@ test "design inspector notices reject nonlocal and terminal-control URLs" {
     const notice = (try inspectorNotice(alloc, "{\"inspector\":{\"state\":\"needs-repair\",\"url\":\"http://127.0.0.1:1234/a/b/view\"}}", false)).?;
     defer alloc.free(notice);
     try std.testing.expect(std.mem.startsWith(u8, notice, "needs repair\nReview diff:"));
+}
+
+test "agent diff results register only ready local viewer links" {
+    const alloc = std.testing.allocator;
+    const notice = (try diffResultNotice(alloc, "{\"status\":\"ready\",\"url\":\"http://127.0.0.1:1234/a/view\"}")).?;
+    defer alloc.free(notice);
+    try std.testing.expect(std.mem.find(u8, notice, "Open viewer") != null);
+    try std.testing.expect((try diffResultNotice(alloc, "{\"status\":\"blocked\",\"url\":\"http://127.0.0.1:1234/a/view\"}")) == null);
+    try std.testing.expect((try diffResultNotice(alloc, "{\"status\":\"ready\",\"url\":\"https://example.com\"}")) == null);
 }
 
 test "design helper rejects an unavailable runtime before registration" {

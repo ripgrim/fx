@@ -228,15 +228,15 @@ test.skipIf(!tmuxAvailable())("design completion gate stops after one blocked co
   expect(tui.paneStatus().status).toBe(0);
 }, 60_000);
 
-test.skipIf(!tmuxAvailable())("design diff shortcut opens the latest preview without consuming the draft", async () => {
+for (const operation of ["verify", "diff"]) test.skipIf(!tmuxAvailable())(`design ${operation} shortcut opens the latest preview without exiting or consuming the draft`, async () => {
   const root = createRoot("diff-shortcut", LEGACY_FIXTURE);
   const configPath = join(root.home, ".fx", "mcp.json");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   const url = "http://127.0.0.1:12345/test/checkpoint/view";
   const server = config.mcp.fixture;
-  server.environment.FX_MCP_INITIAL_TOOL_NAME = "design_verify";
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = `design_${operation}`;
   server.environment.FX_MCP_RAW_RESULT = "1";
-  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify({ inspector: { state: "needs-repair", url, auto_open: false } });
+  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify(operation === "diff" ? { status: "ready", url } : { inspector: { state: "needs-repair", url, auto_open: false } });
   writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
   const bin = join(root.root, "bin");
   mkdirSync(bin);
@@ -247,8 +247,8 @@ test.skipIf(!tmuxAvailable())("design diff shortcut opens the latest preview wit
     chmodSync(path, 0o755);
   }
   gateway = startFakeGateway([
-    fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_fx_design_verify" }),
-    fakeGatewayToolCall("verify", "mcp_fx_design_verify", { text: "verify" }),
+    fakeGatewayToolCall("select", "mcp_select_tool", { name: `mcp_fx_design_${operation}` }),
+    fakeGatewayToolCall("verify", `mcp_fx_design_${operation}`, operation === "diff" ? { target: "node:board http://localhost:3000" } : { text: "verify" }),
     fakeGatewayFinalText("Preview available."),
   ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
   const stderrPath = join(root.root, "stderr.log");
@@ -261,6 +261,9 @@ test.skipIf(!tmuxAvailable())("design diff shortcut opens the latest preview wit
   // Yolo's safety warning deliberately takes priority over normal footer tips.
   await tui.sendText("/permissions auto");
   await tui.waitForText("Diff ready", 15_000);
+  await tui.sendKeys("C-d");
+  await tui.waitForPane((pane) => existsSync(opened) && pane.includes("Diff ready"), 10_000);
+  expect(readFileSync(opened, "utf8")).toBe(url);
   await tui.sendKeys("draft");
   await tui.sendKeys("C-d");
   await tui.waitForPane((pane) => existsSync(opened) && pane.includes("draft"), 10_000);
