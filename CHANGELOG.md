@@ -7,7 +7,8 @@
 ### New Features
 
 - **Design mode:** Capture rendered pages and prepare imports into Paper using existing source assets and styles.
-- **Visual verification:** Compare source captures with Paper designs in a browser viewer with zoom controls and a Ctrl+D shortcut.
+- **Visual comparisons:** Use `/diff` with a page URL and Paper node to create a fresh comparison without an import. Comparisons run in the background and open with Ctrl+D.
+- **Diff viewer:** Inspect Paper and highlighted changes with a draggable reveal slider, synchronized zoom and pan, and an optional source view.
 
 ### Bug Fixes
 
