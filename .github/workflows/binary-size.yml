@@ -24,21 +24,6 @@ jobs:
             runner: ubuntu-24.04
             section_format: elf
             expected_file: "ELF 64-bit LSB.*x86-64"
-          - name: linux-aarch64
-            target: aarch64-linux
-            runner: ubuntu-24.04-arm
-            section_format: elf
-            expected_file: "ELF 64-bit LSB.*ARM aarch64"
-          - name: macos-x86_64
-            target: x86_64-macos
-            runner: macos-15-intel
-            section_format: macho
-            expected_file: "Mach-O 64-bit executable x86_64"
-          - name: macos-aarch64
-            target: aarch64-macos
-            runner: macos-15
-            section_format: macho
-            expected_file: "Mach-O 64-bit executable arm64"
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.sha }}

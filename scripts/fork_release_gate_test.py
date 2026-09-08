@@ -1,4 +1,7 @@
 import copy
+import json
+from pathlib import Path
+import re
 import unittest
 from fork_release_gate import PLATFORMS, require_full_ci
 
@@ -19,7 +22,13 @@ class GateTests(unittest.TestCase):
         return require_full_ci("ripgrim/fx", self.sha, self.api)
 
     def test_exact_proof(self):
+        self.assertEqual(PLATFORMS, ("linux-x86_64",))
         self.assertEqual(self.check(), 1)
+
+    def test_other_platform_cannot_replace_linux(self):
+        self.jobs = [dict(name="Full suite (macos-aarch64)", conclusion="success")]
+        with self.assertRaises(RuntimeError):
+            self.check()
 
     def test_stale_main(self):
         self.main = "b" * 40
@@ -53,6 +62,23 @@ class GateTests(unittest.TestCase):
         self.jobs.append(self.jobs[0])
         with self.assertRaises(RuntimeError):
             self.check()
+
+    def test_workflow_platform_contract(self):
+        workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
+        full = (workflows / "full-ci.yml").read_text()
+        choices = re.findall(r"fromJSON\(inputs.all_platforms == true && '([^']+)' \|\| '([^']+)'\)", full)
+        self.assertEqual(len(choices), 3)
+        for expanded, default in choices:
+            names = lambda value: [item["name"] if isinstance(item, dict) else item for item in json.loads(value)]
+            self.assertEqual(names(default), list(PLATFORMS))
+            self.assertEqual(names(expanded), ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"])
+        self.assertIn("  pull_request:\n", full)
+        release = (workflows / "release.yml").read_text()
+        self.assertEqual(re.findall(r"            target: (.+)", release), ["x86_64-linux"])
+        self.assertIn("needs: [check-version, build-linux]", release)
+        self.assertNotIn("pgso-macos-arm64.yml", release)
+        size = (workflows / "binary-size.yml").read_text()
+        self.assertEqual(re.findall(r"            target: (.+)", size), ["x86_64-linux"])
 
 
 if __name__ == "__main__":

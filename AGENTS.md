@@ -10,7 +10,7 @@ Before reporting the work as ready:
 
 1. Build succeeds.
 2. Focused tests for the changed path pass locally.
-3. The **Full CI** run for the exact current commit passes on every required Linux and macOS runner.
+3. The **Full CI** run for the exact current commit passes on the required Linux x86_64 runner.
 4. Run the built binary locally and drive at least one real interaction that exercises the change end to end.
 5. Confirm the process did not abort, stderr is clean, and the behavior matches what you are about to tell the user.
 
@@ -270,7 +270,7 @@ Keep PR titles as clean imperative sentences, such as `Restore feedback report f
 
 Do not run the complete deterministic test suite locally as the default development loop. Run the focused test for the changed path, build the binary, and exercise that path with `./zig-out/bin/fx`.
 
-After the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. `.github/workflows/full-ci.yml` runs the following on all four supported native runner architectures:
+After the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. `.github/workflows/full-ci.yml` runs automatically on PRs and main for Linux x86_64. Manual dispatch with `all_platforms: true` additionally tests the other architectures below:
 
 * `ubuntu-24.04` (x86_64)
 * `ubuntu-24.04-arm` (aarch64)
@@ -279,7 +279,7 @@ After the focused checks pass, create a clean checkpoint commit, push the non-`m
 
 The native matrix builds, tests, and smoke-tests ReleaseSafe on every platform; formatting and the public-surface audit run in those ReleaseSafe jobs. The E2E matrix runs four duration-balanced, isolated ReleaseSafe shards per platform with Bun and tmux. Checked-in weights assign every test file to exactly one shard on each platform, and files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one bounded retry after its tmux server is reset. Live model evals remain separate because they require credentials and are not deterministic.
 
-A Full CI result is valid only when it belongs to the exact current commit and all four `Full suite (...)` jobs succeed. Each platform aggregate requires its ReleaseSafe native check plus all four ReleaseSafe E2E shards. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If Full CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for Full CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
+A Full CI result is valid only when it belongs to the exact current commit and the required `Full suite (linux-x86_64)` job succeeds (all four aggregates must succeed when explicitly running all platforms). Each platform aggregate requires its ReleaseSafe native check plus all four ReleaseSafe E2E shards. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If Full CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for Full CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
 
 ## Reproducing Render Bugs
 
@@ -351,8 +351,7 @@ When adding features, consider their impact on startup latency. The `fx help` pa
 
 ## Binary Size Observability
 
-Every pull request runs `.github/workflows/binary-size.yml` across Linux x86_64,
-Linux arm64, macOS x86_64, and macOS arm64. Each matrix job builds the pull
+Every pull request runs `.github/workflows/binary-size.yml` on Linux x86_64. Each matrix job builds the pull
 request merge commit and its base commit as stripped ReleaseSafe binaries on
 the same native runner, then reports the exact byte and MiB delta plus ELF or
 Mach-O section changes.
@@ -360,9 +359,9 @@ Mach-O section changes.
 Each platform check is informational. An increase of at least 52,429 bytes
 (0.050000 MiB) emits a warning and retains that platform's binaries for
 investigation, but does not reject the pull request. Investigate notable
-unexplained growth before changing the threshold. The full macOS arm64 PGSO
-release qualification remains authoritative for the 7.800 MiB production
-ceiling and performance gates.
+unexplained growth before changing the threshold. macOS arm64 PGSO remains
+available manually for its size and performance qualification; it is not
+required for this fork's Linux-only releases.
 
 ## Documentation
 
@@ -398,7 +397,7 @@ To prepare a release by hand:
 4. Update `README.md` install example version
 5. Open a PR and merge to `main`
 
-When the PR merges, CI compares the version tag to what exists in git. If the tag is missing, it cross-compiles all platform binaries, creates the git tag, and publishes a GitHub Release with the binaries attached. The release body is extracted from the content between the `<!-- release:start -->` and `<!-- release:end -->` markers in `CHANGELOG.md`.
+When the PR merges, CI compares the version tag to what exists in git. If the tag is missing, it builds the Linux x86_64 binary, creates the git tag, and publishes a GitHub Release with the binaries attached. The release body is extracted from the content between the `<!-- release:start -->` and `<!-- release:end -->` markers in `CHANGELOG.md`.
 
 ### Writing the changelog
 
@@ -464,5 +463,5 @@ The canonical repository is `vercel-labs/fx` on GitHub. All URLs, links, and ref
 1. Run `zig fmt --check src/` and the focused tests for the changed path.
 2. Build and exercise the change locally with `./zig-out/bin/fx`.
 3. Push a clean checkpoint commit and open a draft PR immediately.
-4. Require **Full CI** and the final ship gate to pass on the exact current commit across all four native runners.
+4. Require **Full CI** and the final ship gate to pass on the exact current commit on Linux x86_64.
 5. Update docs if behavior changed.

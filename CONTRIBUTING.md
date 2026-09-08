@@ -3,10 +3,10 @@
 For `ripgrim/fx` CI, release credentials and publishing, see
 [Fork releases](docs/fork-releases.md).
 
-On this fork, PR automation runs Binary Size only. Dispatch Full CI manually
-on the feature branch before requesting readiness; it still runs automatically
-on `main` for release qualification. CI, Benchmarks, and standalone PGSO checks
-are available on demand.
+On this fork, PR automation runs Linux x86_64 Full CI and Binary Size. Full CI
+also runs on `main` for release qualification. Manual Full CI dispatch with
+`all_platforms: true` includes Linux ARM64 and both macOS architectures.
+CI, Benchmarks, and standalone PGSO checks are available on demand.
 
 ## Scope
 
@@ -57,18 +57,18 @@ agent runs against Comp and Paper, see [Live Design evaluation](docs/design-live
 
 Keep the local development loop focused: run the narrowest test that covers the changed path, build fx, and exercise the change using `./zig-out/bin/fx`. The installed `fx` on `PATH` is not valid development evidence.
 
-Once the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. The **Full CI** workflow runs the complete deterministic suite on native Linux x86_64, Linux aarch64, macOS x86_64, and macOS aarch64 runners. The native matrix builds, tests, and smoke-tests ReleaseSafe on every platform; formatting and the public-surface audit run in those ReleaseSafe jobs. Four duration-balanced, isolated ReleaseSafe E2E shards per platform use checked-in weights to assign every Bun test file once; files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one bounded retry after tmux is reset.
+Once the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. The **Full CI** workflow runs the complete deterministic suite on Linux x86_64 by default; manual `all_platforms: true` dispatch adds Linux aarch64 and both macOS architectures. The native matrix builds, tests, and smoke-tests ReleaseSafe on every platform; formatting and the public-surface audit run in those ReleaseSafe jobs. Four duration-balanced, isolated ReleaseSafe E2E shards per platform use checked-in weights to assign every Bun test file once; files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one bounded retry after tmux is reset.
 
-Standard PR CI reports ReleaseSafe Build & Test and deterministic E2E results. Do not mark the draft PR ready until all four Full CI jobs and the final ship gate have succeeded for the exact current commit. Each platform aggregate requires its ReleaseSafe native check and all four ReleaseSafe E2E shards. A result from an older commit does not count. Live model evals are separate from this gate because they require credentials and are not deterministic.
+Standard PR CI reports ReleaseSafe Build & Test and deterministic E2E results. Do not mark the draft PR ready until the Linux x86_64 Full CI aggregate and the final ship gate have succeeded for the exact current commit. Each platform aggregate requires its ReleaseSafe native check and all four ReleaseSafe E2E shards. A result from an older commit does not count. Live model evals are separate from this gate because they require credentials and are not deterministic.
 
-Changes to `build.zig` or `scripts/pgso/` also run the native macOS arm64 PGSO candidate workflow. That lane produces retained size, behavior, and performance evidence but does not alter any release artifact or update channel. Its pinned toolchain, local reproduction command, corpus exclusions, and failure rules are documented in [`scripts/pgso/README.md`](scripts/pgso/README.md).
+Manual dispatch can run the native macOS arm64 PGSO candidate workflow. That lane produces retained size, behavior, and performance evidence but does not alter any release artifact or update channel. Its pinned toolchain, local reproduction command, corpus exclusions, and failure rules are documented in [`scripts/pgso/README.md`](scripts/pgso/README.md).
 
 Every pull request also receives informational ReleaseSafe binary-size
-comparisons for Linux x86_64, Linux arm64, macOS x86_64, and macOS arm64. Each
+comparisons for Linux x86_64. Each
 comparison builds the pull request merge commit and base commit on the same
 native runner, reports exact file and ELF or Mach-O section deltas, and emits a
 warning at increases of 52,429 bytes (0.050000 MiB) or more. The warning requests
-investigation but does not replace the full PGSO release gate or reject a valid
+investigation but does not replace the Full CI release gate or reject a valid
 feature solely for adding code.
 
 ## Pull Requests
@@ -434,7 +434,7 @@ Releases are triggered automatically when the version in `src/main.zig` changes 
 
 1. Edit `pub const version = "X.Y.Z";` in `src/main.zig`
 2. Merge to `main`
-3. The release workflow checks if `vX.Y.Z` tag exists; if not, it builds four platform binaries, creates the git tag, and publishes a GitHub Release with the binaries attached
+3. The release workflow checks if `vX.Y.Z` tag exists; if not, it builds the Linux x86_64 binary, creates the git tag, and publishes a GitHub Release with the binaries attached
 
 The install script and `fx upgrade` fetch binaries from `releases.fx.sh`, backed by the public Vercel Blob CDN. No authentication or external CLI tools are required. The release workflow also publishes binaries to the CDN and updates `latest.txt` automatically.
 
@@ -487,5 +487,5 @@ Minimum checklist:
 1. Run `zig fmt --check src/` and the focused tests for the changed path.
 2. Run `zig build`, then exercise the change with `./zig-out/bin/fx`.
 3. Push the feature branch and open a draft PR immediately.
-4. Require all four **Full CI** jobs and the final ship gate to pass for the exact current commit before marking the PR ready.
+4. Require the Linux x86_64 **Full CI** aggregate and the final ship gate to pass for the exact current commit before marking the PR ready.
 5. Update `README.md` if user-facing behavior changed.

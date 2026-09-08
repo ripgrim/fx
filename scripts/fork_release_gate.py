@@ -1,10 +1,10 @@
-"""Require exact-commit, four-platform Full CI before publishing this fork."""
+"""Require exact-commit Linux x86_64 Full CI before publishing this fork."""
 import json
 import re
 import subprocess
 import sys
 
-PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64")
+PLATFORMS = ("linux-x86_64",)
 
 
 def github(path):
@@ -39,8 +39,8 @@ def require_full_ci(repository, sha, api=github):
     jobs = pages(f"{prefix}/actions/runs/{run['id']}/jobs?filter=latest", api)
     expected = {f"Full suite ({platform})" for platform in PLATFORMS}
     selected = [job for job in jobs if job.get("name") in expected]
-    if len(selected) != 4 or {job["name"] for job in selected} != expected or any(job.get("conclusion") != "success" for job in selected):
-        raise RuntimeError("All four Full suite aggregates must succeed")
+    if len(selected) != len(expected) or {job["name"] for job in selected} != expected or any(job.get("conclusion") != "success" for job in selected):
+        raise RuntimeError("Linux x86_64 Full suite aggregate must succeed")
     return run["id"]
 
 

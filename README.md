@@ -1,5 +1,6 @@
 This is the `ripgrim/fx` fork. See [Fork releases](docs/fork-releases.md) for CI
-and publishing. Upstream installation links below install upstream fx, not this fork.
+and publishing. This fork currently publishes Linux x86_64 binaries only.
+Upstream installation links below install upstream fx, not this fork.
 
 ```
  ⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀

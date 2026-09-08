@@ -1,7 +1,13 @@
 name: Full CI
 
 on:
+  pull_request:
   workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: Run Linux ARM64 and both macOS architectures too
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -28,15 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - name: linux-x86_64
-            runner: ubuntu-24.04
-          - name: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - name: macos-x86_64
-            runner: macos-15-intel
-          - name: macos-aarch64
-            runner: macos-15
+        platform: ${{ fromJSON(inputs.all_platforms == true && '[{"name":"linux-x86_64","runner":"ubuntu-24.04"},{"name":"linux-aarch64","runner":"ubuntu-24.04-arm"},{"name":"macos-x86_64","runner":"macos-15-intel"},{"name":"macos-aarch64","runner":"macos-15"}]' || '[{"name":"linux-x86_64","runner":"ubuntu-24.04"}]') }}
         optimize: [ReleaseSafe]
     env:
       AI_GATEWAY_API_KEY: ""
@@ -86,19 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - name: linux-x86_64
-            runner: ubuntu-24.04
-            zig_tarball: zig-x86_64-linux
-          - name: linux-aarch64
-            runner: ubuntu-24.04-arm
-            zig_tarball: zig-aarch64-linux
-          - name: macos-x86_64
-            runner: macos-15-intel
-            zig_tarball: zig-x86_64-macos
-          - name: macos-aarch64
-            runner: macos-15
-            zig_tarball: zig-aarch64-macos
+        platform: ${{ fromJSON(inputs.all_platforms == true && '[{"name":"linux-x86_64","runner":"ubuntu-24.04","zig_tarball":"zig-x86_64-linux"},{"name":"linux-aarch64","runner":"ubuntu-24.04-arm","zig_tarball":"zig-aarch64-linux"},{"name":"macos-x86_64","runner":"macos-15-intel","zig_tarball":"zig-x86_64-macos"},{"name":"macos-aarch64","runner":"macos-15","zig_tarball":"zig-aarch64-macos"}]' || '[{"name":"linux-x86_64","runner":"ubuntu-24.04","zig_tarball":"zig-x86_64-linux"}]') }}
         optimize: [ReleaseSafe]
         shard:
           - index: 0
@@ -241,11 +227,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - linux-x86_64
-          - linux-aarch64
-          - macos-x86_64
-          - macos-aarch64
+        name: ${{ fromJSON(inputs.all_platforms == true && '["linux-x86_64","linux-aarch64","macos-x86_64","macos-aarch64"]' || '["linux-x86_64"]') }}
     steps:
       - name: Verify native and E2E matrices
         env:
