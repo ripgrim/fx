@@ -370,6 +370,7 @@ pub fn Handlers(comptime App: type) type {
                 .show_usage = commandShowUsage,
                 .undo_last = commandUndoLast,
                 .handle_mcp = commandHandleMcp,
+                .handle_diff = commandHandleDiff,
                 .handle_skills = commandHandleSkills,
                 .copy_last = commandCopyLast,
                 .submit_feedback = commandSubmitFeedback,
@@ -390,6 +391,7 @@ pub fn Handlers(comptime App: type) type {
         }
 
         pub fn collectMcpReloadFacts(app: *App) !void {
+            if (comptime @hasField(App, "design_diff")) try @import("../design/diff_command.zig").collect(app, app_session_runtime.Runtime(App).activeSessionId(app));
             if (comptime !@hasDecl(App, "takeMcpReloadCompletion")) return;
             var completion = (try app.takeMcpReloadCompletion()) orelse return;
             defer completion.deinit(app.alloc);
@@ -1295,6 +1297,15 @@ pub fn Handlers(comptime App: type) type {
             }, true);
         }
 
+        fn commandHandleDiff(ctx: *anyopaque, rest: []const u8) !void {
+            const app: *App = @ptrCast(@alignCast(ctx));
+            if (comptime !@hasDecl(App, "acquireMcpRuntime") or !@hasField(App, "permission_engine") or !@hasField(App, "design_diff")) return error.McpRuntimeUnavailable;
+            if (app_session_runtime.Runtime(App).activeSessionId(app) == null) try app_session_runtime.Runtime(App).beginFreshPersistedSession(app);
+            @import("../design/diff_command.zig").run(app, rest, app_session_runtime.Runtime(App).activeSessionId(app)) catch {
+                try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Comparison unavailable. Check the capture and MCP connection." }, true);
+            };
+        }
+
         fn commandHandleMcp(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             if (std.mem.trim(u8, rest, " \t").len == 0 and
@@ -1317,7 +1328,7 @@ pub fn Handlers(comptime App: type) type {
                 return;
             }
             const result = try app.mcpCommandProvider().handle(app.alloc, rest, .{
-                .home = io_mod.getenv("HOME"),
+                .home = io_mod.getenv("HOME") orelse io_mod.getenv("USERPROFILE"),
                 .list_ctx = @ptrCast(app),
                 .summarize_servers = summarizeMcpServers,
                 .list_servers_and_tools = listMcpServersAndTools,

@@ -9,6 +9,7 @@ const access_policy = @import("../mcp/access_policy.zig");
 const Allocator = std.mem.Allocator;
 
 pub const HasToolFn = *const fn (*anyopaque, []const u8, Access) bool;
+pub const ToolReadOnlyFn = *const fn (*anyopaque, Allocator, []const u8, Access) anyerror!bool;
 pub const ValidateToolFn = *const fn (*anyopaque, Allocator, []const u8, []const u8, Access) anyerror!ValidationResult;
 pub const CallToolFn = *const fn (*anyopaque, Allocator, []const u8, []const u8, usize, CallOptions) anyerror!?CallResult;
 pub const SearchRequest = capability_retrieval.Request;
@@ -299,6 +300,7 @@ pub const ToolSchemaResult = union(enum) {
 pub const RuntimeCapabilities = struct {
     context: ?*anyopaque = null,
     has_tool: ?HasToolFn = null,
+    tool_read_only: ?ToolReadOnlyFn = null,
     validate_tool: ?ValidateToolFn = null,
     call_tool: ?CallToolFn = null,
     tool_schema: ?ToolSchemaFn = null,

@@ -1660,6 +1660,17 @@ pub const State = struct {
         return lease.runtime.hasToolWithAccess(name, access);
     }
 
+    pub fn toolReadOnly(
+        self: *State,
+        alloc: Allocator,
+        name: []const u8,
+        access: tool_mcp_runtime.Access,
+    ) !bool {
+        var lease = self.acquire() orelse return false;
+        defer lease.deinit();
+        return lease.runtime.toolReadOnlyByNameWithAccess(alloc, name, access);
+    }
+
     pub fn validateTool(
         self: *State,
         arena: Allocator,

@@ -33,6 +33,17 @@ pub const ProfileAddResult = struct {
     }
 };
 
+pub const ProfileEnsureResult = struct {
+    profile_path: []u8,
+    added: bool,
+    warning: ?mcp_contract.ProfileConfigWarning = null,
+
+    pub fn deinit(self: *ProfileEnsureResult, alloc: Allocator) void {
+        alloc.free(self.profile_path);
+        self.* = undefined;
+    }
+};
+
 pub const AddProfileServerFn = *const fn (
     alloc: Allocator,
     intent: AddIntent,

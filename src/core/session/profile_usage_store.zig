@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
 const generation_fact_codec = @import("generation_fact_codec.zig");
@@ -13,8 +14,8 @@ const max_record_bytes: usize = 16 * 1024;
 const max_records: usize = 200_000;
 const compaction_threshold_bytes: u64 = 8 * 1024 * 1024;
 const retention_ms: i64 = std.time.ms_per_day * 35;
-const private_dir_permissions = std.Io.Dir.Permissions.fromMode(0o700);
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_dir_permissions = io_mod.permissionsFromMode(0o700);
+const private_file_permissions = io_mod.permissionsFromMode(0o600);
 
 pub const AppendOutcome = enum {
     appended,
@@ -271,7 +272,7 @@ pub const Store = struct {
         const durable_home = self.durable_home orelse return;
         const stat = try durable_home.dir.stat(io_mod.getIo());
         if (stat.kind != .directory) return error.DurablePathUnsafe;
-        if (stat.permissions.toMode() & 0o777 != 0o700) {
+        if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
             return error.PrivateStatePermissionsUnsupported;
         }
     }
@@ -299,7 +300,7 @@ pub const Store = struct {
         ) catch return error.PrivateStatePermissionsUnsupported;
         const stat = try self.durable_home.?.dir.stat(io_mod.getIo());
         if (stat.kind != .directory) return error.DurablePathUnsafe;
-        if (stat.permissions.toMode() & 0o777 != 0o700) {
+        if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
             return error.PrivateStatePermissionsUnsupported;
         }
     }
@@ -331,7 +332,7 @@ pub const Store = struct {
         if (stat.kind != .file or stat.nlink != 1) {
             return error.DurablePathUnsafe;
         }
-        if (stat.permissions.toMode() & 0o777 != 0o600) {
+        if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
             return error.PrivateStatePermissionsUnsupported;
         }
 
@@ -368,7 +369,7 @@ pub const Store = struct {
         if (stat.kind != .file or stat.nlink != 1) {
             return error.DurablePathUnsafe;
         }
-        if (stat.permissions.toMode() & 0o777 != 0o600) {
+        if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
             return error.PrivateStatePermissionsUnsupported;
         }
         return true;
@@ -416,7 +417,7 @@ pub const Store = struct {
                 return error.PrivateStatePermissionsUnsupported;
         }
         const verified = if (writable) try file.stat(zio) else initial;
-        if (verified.permissions.toMode() & 0o777 != 0o600) {
+        if (!io_mod.permissionsMatch(verified.permissions, 0o600)) {
             return error.PrivateStatePermissionsUnsupported;
         }
         if (created) {
@@ -608,9 +609,11 @@ fn openExistingUsageFile(
     dir: std.Io.Dir,
     mode: std.Io.Dir.OpenFileOptions.Mode,
 ) !std.Io.File {
-    return io_mod.openExistingRegularFile(dir, usage_file, mode) catch |err| switch (err) {
-        error.FileControlFailed => error.UsageReadFailed,
-        else => err,
+    return io_mod.openExistingRegularFile(dir, usage_file, mode) catch |err| {
+        if (comptime builtin.os.tag != .windows) {
+            if (err == error.FileControlFailed) return error.UsageReadFailed;
+        }
+        return err;
     };
 }
 

@@ -773,6 +773,8 @@ pub fn Runtime(comptime App: type) type {
                 else
                     .{},
                 .upgrade_status = upgrade_label,
+                .design_diff_loading = if (comptime @hasField(App, "design_diff")) if (app.design_diff.job != null) ([4][]const u8{ "| Comparing", "/ Comparing", "- Comparing", "\\ Comparing" })[@as(usize, @intCast(@max(io_mod.milliTimestamp(), 0))) / 150 % 4] else "" else "",
+                .design_diff_ready = if (comptime @hasField(App, "shell")) @import("../design/managed_helper.zig").latest_inspector_url(app.shell.entries.items) != null else false,
                 .danger_status = if (yolo_warning_active)
                     app_permission_runtime.yolo_warning_text
                 else
@@ -1307,6 +1309,7 @@ pub fn Runtime(comptime App: type) type {
             ctx.statusline = .{
                 .workspace_label = base.statusline.workspace_label,
                 .git_branch = base.statusline.git_branch,
+                .mode_label = base.statusline.mode_label,
             };
             const worker_status_projection = if (app.subagents.childConversationRuntime()) |child_runtime|
                 child_runtime.worker_status_state().projection()
@@ -1392,6 +1395,13 @@ pub fn Runtime(comptime App: type) type {
             visible_model: []const u8,
         ) ui_render.StatuslineItems {
             var items: ui_render.StatuslineItems = .{};
+            if (comptime @hasField(App, "permission_state") and
+                @hasField(App, "permission_engine"))
+            {
+                if (app_permission_runtime.Runtime(App).designModeActive(app)) {
+                    items.mode_label = "DESIGN";
+                }
+            }
             if (comptime @hasField(App, "workspace_identity") and
                 @hasField(App, "workspace_root"))
             {

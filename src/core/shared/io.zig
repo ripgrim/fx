@@ -484,11 +484,42 @@ pub fn nanoTimestamp() i128 {
     return @intCast(ts.nanoseconds);
 }
 
+pub fn permissionsFromMode(mode: u32) std.Io.File.Permissions {
+    if (comptime builtin.os.tag == .windows) return .default_file;
+    return .fromMode(@intCast(mode));
+}
+
+pub fn permissionsMode(permissions: std.Io.File.Permissions) ?u32 {
+    if (comptime builtin.os.tag == .windows) return null;
+    return @intCast(permissions.toMode());
+}
+
+pub fn permissionsAllowOwnerWrite(permissions: std.Io.File.Permissions) bool {
+    const mode = permissionsMode(permissions) orelse return true;
+    return mode & 0o200 != 0;
+}
+
+pub fn permissionsMatch(permissions: std.Io.File.Permissions, expected: u32) bool {
+    const mode = permissionsMode(permissions) orelse return true;
+    return mode & 0o777 == expected;
+}
+
+pub fn permissionsArePrivate(permissions: std.Io.File.Permissions) bool {
+    const mode = permissionsMode(permissions) orelse return true;
+    return mode & 0o077 == 0;
+}
+
+pub fn permissionsAreWritable(permissions: std.Io.File.Permissions) bool {
+    if (comptime builtin.os.tag == .windows) return @intFromEnum(permissions) & 0x1 == 0;
+    const mode = permissionsMode(permissions).?;
+    return mode & 0o222 != 0;
+}
+
 pub fn writeFileAtomic(alloc: std.mem.Allocator, path: []const u8, text: []const u8) !void {
     e2eFailIfDurableMutationAttempted();
     const maybe_existing_permissions = existingFilePermissions(path);
     if (maybe_existing_permissions) |existing_permissions| {
-        if (existing_permissions.toMode() & 0o222 == 0) return error.AccessDenied;
+        if (!permissionsAreWritable(existing_permissions)) return error.AccessDenied;
     }
     const permissions = maybe_existing_permissions orelse .default_file;
     const temp_path = try std.fmt.allocPrint(alloc, "{s}.tmp.{d}", .{ path, nanoTimestamp() });
@@ -508,8 +539,8 @@ pub fn writeFileAtomic(alloc: std.mem.Allocator, path: []const u8, text: []const
     cleanup_temp = false;
 }
 
-const private_dir_permissions = std.Io.File.Permissions.fromMode(0o700);
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_dir_permissions = permissionsFromMode(0o700);
+const private_file_permissions = permissionsFromMode(0o600);
 
 pub const VerifiedDir = struct {
     dir: std.Io.Dir,
@@ -573,19 +604,19 @@ fn validateRelativeLeaf(name: []const u8) !void {
 fn verifyPrivateRegularFile(file: std.Io.File) !void {
     const stat = try file.stat(getIo());
     if (stat.kind != .file or stat.nlink != 1) return error.DurablePathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o600) return error.PrivateStatePermissionsUnsupported;
+    if (!permissionsMatch(stat.permissions, 0o600)) return error.PrivateStatePermissionsUnsupported;
 }
 
 fn verifyPrivateDirectory(dir: std.Io.Dir) !void {
     const stat = try dir.stat(getIo());
     if (stat.kind != .directory) return error.DurablePathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o700) return error.PrivateStatePermissionsUnsupported;
+    if (!permissionsMatch(stat.permissions, 0o700)) return error.PrivateStatePermissionsUnsupported;
 }
 
 /// The handle must come from an `openDir` that requested iteration. Linux returns an
 /// `O_PATH` descriptor otherwise, and `fsync` rejects those with `EBADF`.
-pub fn syncVerifiedDir(dir: std.Io.Dir) !void {
-    if (comptime builtin.os.tag == .windows) return error.OperationUnsupported;
+pub fn syncVerifiedDir(dir: std.Io.Dir) anyerror!void {
+    if (comptime builtin.os.tag == .windows) return;
     while (true) {
         const rc = std.c.fsync(dir.handle);
         if (rc == 0) return;
@@ -626,7 +657,9 @@ fn openOrCreateVerifiedPrivateChild(parent: std.Io.Dir, name: []const u8) !Verif
     };
     errdefer dir.close(zio);
 
-    dir.setPermissions(zio, private_dir_permissions) catch return error.PrivateStatePermissionsUnsupported;
+    if (comptime builtin.os.tag != .windows) {
+        dir.setPermissions(zio, private_dir_permissions) catch return error.PrivateStatePermissionsUnsupported;
+    }
     try verifyPrivateDirectory(dir);
     if (created) try syncVerifiedDir(parent);
     return .{ .dir = dir };
@@ -647,7 +680,7 @@ fn validateReplaceTarget(dir: std.Io.Dir, name: []const u8) !void {
         else => return err,
     };
     if (stat.kind != .file or stat.nlink != 1) return error.DurablePathUnsafe;
-    if (stat.permissions.toMode() & 0o222 == 0) return error.AccessDenied;
+    if (!permissionsAreWritable(stat.permissions)) return error.AccessDenied;
 }
 
 fn cleanupVerifiedTemp(dir: std.Io.Dir, name: []const u8) void {
@@ -698,7 +731,9 @@ pub fn durableReplaceVerifiedWithOps(
     temp_exists = true;
     defer file.close(getIo());
 
-    file.setPermissions(getIo(), private_file_permissions) catch return error.PrivateStatePermissionsUnsupported;
+    if (comptime builtin.os.tag != .windows) {
+        file.setPermissions(getIo(), private_file_permissions) catch return error.PrivateStatePermissionsUnsupported;
+    }
     verifyPrivateRegularFile(file) catch |err| switch (err) {
         error.DurablePathUnsafe, error.PrivateStatePermissionsUnsupported => return err,
         else => return error.DurableReplacePreRenameFailed,
@@ -712,7 +747,7 @@ pub fn durableReplaceVerifiedWithOps(
         return error.DurableReplacePostRenameFailed;
     };
     if (final_stat.kind != .file or final_stat.nlink != 1 or
-        final_stat.permissions.toMode() & 0o777 != 0o600)
+        !permissionsMatch(final_stat.permissions, 0o600))
     {
         return error.DurableReplacePostRenameFailed;
     }
@@ -745,10 +780,12 @@ fn openOrCreatePrivateLockFile(dir: *VerifiedDir, name: []const u8) !std.Io.File
                 }),
                 else => return create_err,
             };
-            created.setPermissions(zio, private_file_permissions) catch {
-                created.close(zio);
-                return error.PrivateStatePermissionsUnsupported;
-            };
+            if (comptime builtin.os.tag != .windows) {
+                created.setPermissions(zio, private_file_permissions) catch {
+                    created.close(zio);
+                    return error.PrivateStatePermissionsUnsupported;
+                };
+            }
             syncVerifiedDir(dir.dir) catch {
                 created.close(zio);
                 return error.DirectorySyncFailed;
@@ -845,7 +882,7 @@ pub fn copyFileAtomic(alloc: std.mem.Allocator, source_path: []const u8, dest_pa
     const stat = try source.stat(zio);
     if (stat.kind != .file) return error.NotRegularFile;
     if (existingFilePermissions(dest_path)) |existing_permissions| {
-        if (existing_permissions.toMode() & 0o222 == 0) return error.AccessDenied;
+        if (!permissionsAreWritable(existing_permissions)) return error.AccessDenied;
     }
 
     const temp_path = try std.fmt.allocPrint(alloc, "{s}.tmp.{d}", .{ dest_path, nanoTimestamp() });
@@ -902,6 +939,12 @@ pub fn makeDirRecursive(path: []const u8) !void {
 }
 
 pub fn realpathAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (comptime builtin.os.tag == .windows) {
+        var file = std.Io.Dir.openFileAbsolute(getIo(), path, .{ .allow_directory = true }) catch
+            return error.FileNotFound;
+        defer file.close(getIo());
+        return handlePathAlloc(alloc, file.handle);
+    }
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path_z = try std.fmt.bufPrintZ(&buf, "{s}", .{path});
     var result_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -911,7 +954,12 @@ pub fn realpathAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn handlePathAlloc(alloc: std.mem.Allocator, handle: std.Io.File.Handle) ![]u8 {
-    if (comptime builtin.os.tag == .macos or builtin.os.tag == .ios) {
+    if (comptime builtin.os.tag == .windows) {
+        var wide_buf: [std.os.windows.PATH_MAX_WIDE]u16 = undefined;
+        const wide_path = std.Io.Threaded.GetFinalPathNameByHandle(handle, .{}, &wide_buf) catch
+            return error.HandlePathUnavailable;
+        return std.unicode.wtf16LeToWtf8Alloc(alloc, wide_path);
+    } else if (comptime builtin.os.tag == .macos or builtin.os.tag == .ios) {
         // F_GETPATH (macOS fcntl command 50): resolve filesystem path for an fd.
         var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
         const rc = std.c.fcntl(handle, @as(c_int, 50), @intFromPtr(&path_buf));
@@ -956,6 +1004,16 @@ pub fn dirRealpathAlloc(alloc: std.mem.Allocator, dir: std.Io.Dir, sub_path: []c
         defer alloc.free(joined);
         return realpathAlloc(alloc, joined);
     } else if (comptime builtin.os.tag == .linux) {
+        const dir_path = handlePathAlloc(alloc, dir.handle) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.FileNotFound,
+        };
+        if (sub_path.len == 0) return dir_path;
+        defer alloc.free(dir_path);
+        const joined = try std.fs.path.join(alloc, &.{ dir_path, sub_path });
+        defer alloc.free(joined);
+        return realpathAlloc(alloc, joined);
+    } else if (comptime builtin.os.tag == .windows) {
         const dir_path = handlePathAlloc(alloc, dir.handle) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.FileNotFound,

@@ -507,22 +507,41 @@ pub fn configPathFromHome(alloc: Allocator, home: []const u8) ![]u8 {
     return profile_paths.mcpConfigPath(alloc, home);
 }
 
+fn profileHome() ?[]const u8 {
+    return io_mod.getenv("HOME") orelse io_mod.getenv("USERPROFILE");
+}
+
 pub fn addProfileServer(
     alloc: Allocator,
     intent: command_provider_contract.AddIntent,
 ) !command_provider_contract.ProfileAddResult {
-    const home = io_mod.getenv("HOME") orelse return error.HomeNotSet;
+    const home = profileHome() orelse return error.HomeNotSet;
     const config_path = try configPathFromHome(alloc, home);
     errdefer alloc.free(config_path);
     const warning = try addProfileServerToPath(alloc, config_path, intent);
     return .{ .profile_path = config_path, .warning = warning };
 }
 
+pub fn ensureProfileServer(
+    alloc: Allocator,
+    intent: command_provider_contract.AddIntent,
+) !command_provider_contract.ProfileEnsureResult {
+    const home = profileHome() orelse return error.HomeNotSet;
+    const config_path = try configPathFromHome(alloc, home);
+    errdefer alloc.free(config_path);
+    const result = try ensureProfileServerAtPath(alloc, config_path, intent);
+    return .{
+        .profile_path = config_path,
+        .added = result.added,
+        .warning = result.warning,
+    };
+}
+
 pub fn removeProfileServer(
     alloc: Allocator,
     name: []const u8,
 ) !command_provider_contract.ProfileRemoveResult {
-    const home = io_mod.getenv("HOME") orelse return error.HomeNotSet;
+    const home = profileHome() orelse return error.HomeNotSet;
     const config_path = try configPathFromHome(alloc, home);
     errdefer alloc.free(config_path);
     const result = try removeProfileServerFromPath(alloc, config_path, name);
@@ -540,7 +559,7 @@ pub fn loadRuntime(
 ) !?*mcp_runtime.McpRuntime {
     var profile: std.ArrayList(McpServerConfig) = .empty;
     defer freeConfigs(alloc, &profile);
-    if (io_mod.getenv("HOME")) |home| {
+    if (profileHome()) |home| {
         const config_path = try configPathFromHome(alloc, home);
         defer alloc.free(config_path);
         profile = try loadConfigFromPath(alloc, config_path);
@@ -642,7 +661,7 @@ fn traceWorkspaceDiagnostics(diagnostics: []const project_config.WorkspaceDiagno
 pub fn inspectProfileConfig(
     alloc: Allocator,
 ) error{OutOfMemory}!mcp_contract.ProfileConfigDiagnostic {
-    const home = io_mod.getenv("HOME") orelse return .clear;
+    const home = profileHome() orelse return .clear;
     const config_path = try configPathFromHome(alloc, home);
     defer alloc.free(config_path);
 
@@ -664,7 +683,7 @@ pub fn inspectLocalConfig(
     var profile: std.ArrayList(McpServerConfig) = .empty;
     defer freeConfigs(alloc, &profile);
     var profile_diagnostic: mcp_contract.ProfileConfigDiagnostic = .clear;
-    if (io_mod.getenv("HOME")) |home| {
+    if (profileHome()) |home| {
         const config_path = try configPathFromHome(alloc, home);
         defer alloc.free(config_path);
         var document = loadProfileDocumentFromPath(alloc, config_path) catch |err| {
@@ -830,7 +849,14 @@ fn addProfileServerToPath(
     path: []const u8,
     intent: command_provider_contract.AddIntent,
 ) !?project_config.ProfileDiagnostic {
-    const next = switch (intent) {
+    return addOrReplaceServer(alloc, path, try configFromAddIntent(alloc, intent));
+}
+
+fn configFromAddIntent(
+    alloc: Allocator,
+    intent: command_provider_contract.AddIntent,
+) !McpServerConfig {
+    return switch (intent) {
         .local => |local| try configFromCommandParts(alloc, local.name, local.command, local.args),
         .http => |http| blk: {
             const owned_name = try alloc.dupe(u8, http.name);
@@ -844,7 +870,38 @@ fn addProfileServerToPath(
             };
         },
     };
-    return addOrReplaceServer(alloc, path, next);
+}
+
+const ProfileEnsureAtPathResult = struct {
+    added: bool,
+    warning: ?project_config.ProfileDiagnostic = null,
+};
+
+fn ensureProfileServerAtPath(
+    alloc: Allocator,
+    path: []const u8,
+    intent: command_provider_contract.AddIntent,
+) !ProfileEnsureAtPathResult {
+    var next = try configFromAddIntent(alloc, intent);
+    var moved = false;
+    defer if (!moved) next.deinit(alloc);
+
+    var lock = try acquireProfileMutationLock(path);
+    defer lock.release();
+    var document = try loadProfileDocumentFromPath(alloc, path);
+    defer document.deinit(alloc);
+    if (!document.mutation_allowed) return error.McpConfigAmbiguousServerKey;
+
+    for (document.configs.items) |existing| {
+        if (std.mem.eql(u8, existing.name, next.name)) {
+            return .{ .added = false, .warning = document.diagnostic };
+        }
+    }
+
+    try document.configs.append(alloc, next);
+    moved = true;
+    try saveConfigsToPath(alloc, path, document.configs.items);
+    return .{ .added = true, .warning = document.diagnostic };
 }
 
 fn addOrReplaceServer(
@@ -2454,6 +2511,78 @@ test "addProfileServerToPath roundtrips local replacement and remove" {
     var after = try loadConfigFromPath(alloc, path);
     defer freeConfigs(alloc, &after);
     try std.testing.expectEqual(@as(usize, 0), after.items.len);
+}
+
+test "ensureProfileServerAtPath adds once without replacing a named server" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home);
+    const path = try configPathFromHome(alloc, home);
+    defer alloc.free(path);
+    const paper_intent = command_provider_contract.AddIntent{ .http = .{
+        .name = "paper",
+        .url = "http://127.0.0.1:29979/mcp",
+    } };
+
+    const first = try ensureProfileServerAtPath(alloc, path, paper_intent);
+    try std.testing.expect(first.added);
+    const second = try ensureProfileServerAtPath(alloc, path, paper_intent);
+    try std.testing.expect(!second.added);
+
+    {
+        var configs = try loadConfigFromPath(alloc, path);
+        defer freeConfigs(alloc, &configs);
+        try std.testing.expectEqual(@as(usize, 1), configs.items.len);
+        try std.testing.expectEqualStrings("paper", configs.items[0].name);
+        try std.testing.expectEqual(McpTransport.http, configs.items[0].transport);
+        try std.testing.expectEqualStrings(
+            "http://127.0.0.1:29979/mcp",
+            try configs.items[0].remoteUrl(),
+        );
+    }
+
+    _ = try addProfileServerToPath(
+        alloc,
+        path,
+        .{ .local = .{ .name = "paper", .command = "custom-paper", .args = &.{} } },
+    );
+    const preserved = try ensureProfileServerAtPath(alloc, path, paper_intent);
+    try std.testing.expect(!preserved.added);
+
+    var custom = try loadConfigFromPath(alloc, path);
+    defer freeConfigs(alloc, &custom);
+    try std.testing.expectEqual(@as(usize, 1), custom.items.len);
+    try std.testing.expectEqual(McpTransport.stdio, custom.items[0].transport);
+    try std.testing.expectEqualStrings("custom-paper", try custom.items[0].stdioCommand());
+}
+
+test "ensureProfileServer falls back to USERPROFILE" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home");
+    const home_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home_path);
+
+    const test_home = try TestHome.install(alloc, null);
+    defer test_home.deinit();
+    try test_home.map.put("USERPROFILE", home_path);
+
+    var result = try ensureProfileServer(alloc, .{ .http = .{
+        .name = "paper",
+        .url = "http://127.0.0.1:29979/mcp",
+    } });
+    defer result.deinit(alloc);
+    try std.testing.expect(result.added);
+
+    var configs = try loadConfigFromPath(alloc, result.profile_path);
+    defer freeConfigs(alloc, &configs);
+    try std.testing.expectEqual(@as(usize, 1), configs.items.len);
+    try std.testing.expectEqualStrings("paper", configs.items[0].name);
 }
 
 test "profile mutation preserves canonical files with suspicious sibling maps" {

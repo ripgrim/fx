@@ -1,6 +1,6 @@
 const std = @import("std");
-const host_target = @import("../hosts/target.zig");
 const builtin = @import("builtin");
+const host_target = @import("../hosts/target.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const operation_control = @import("operation_control.zig");
@@ -1868,29 +1868,32 @@ fn validateJsonContentType(content_type: ?[]const u8) !void {
 }
 
 fn setSocketTimeouts(socket: std.posix.socket_t, seconds: i64) void {
-    if (comptime host_target.is_wasm) return;
-    const timeout = std.posix.timeval{ .sec = seconds, .usec = 0 };
-    const bytes = std.mem.asBytes(&timeout);
-    std.posix.setsockopt(
-        socket,
-        std.posix.SOL.SOCKET,
-        std.posix.SO.RCVTIMEO,
-        bytes,
-    ) catch |err| debug_trace.logf(
-        "mcp",
-        "OAuth receive timeout setup failed err={s}",
-        .{@errorName(err)},
-    );
-    std.posix.setsockopt(
-        socket,
-        std.posix.SOL.SOCKET,
-        std.posix.SO.SNDTIMEO,
-        bytes,
-    ) catch |err| debug_trace.logf(
-        "mcp",
-        "OAuth send timeout setup failed err={s}",
-        .{@errorName(err)},
-    );
+    if (comptime builtin.os.tag == .windows or host_target.is_wasm) {
+        return;
+    } else {
+        const timeout = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+        const bytes = std.mem.asBytes(&timeout);
+        std.posix.setsockopt(
+            socket,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVTIMEO,
+            bytes,
+        ) catch |err| debug_trace.logf(
+            "mcp",
+            "OAuth receive timeout setup failed err={s}",
+            .{@errorName(err)},
+        );
+        std.posix.setsockopt(
+            socket,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.SNDTIMEO,
+            bytes,
+        ) catch |err| debug_trace.logf(
+            "mcp",
+            "OAuth send timeout setup failed err={s}",
+            .{@errorName(err)},
+        );
+    }
 }
 
 fn dupeRequiredSecret(

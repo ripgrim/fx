@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 
@@ -8,6 +9,22 @@ const poll_ms: i32 = 100;
 const socket_timeout_seconds: i64 = 30;
 const silence_ms: i64 = 250;
 const max_accepts_per_poll: usize = 16;
+
+const WindowsPollFd = extern struct {
+    fd: usize,
+    events: i16,
+    revents: i16,
+};
+
+const WindowsSockets = struct {
+    extern "ws2_32" fn WSAPoll(
+        fds: [*]WindowsPollFd,
+        count: u32,
+        timeout_ms: c_int,
+    ) callconv(.winapi) c_int;
+};
+
+const windows_poll_read: i16 = 0x0100;
 
 pub const Response = enum {
     ok,
@@ -134,17 +151,28 @@ fn listenerReady(
     cancel_flag: *std.atomic.Value(bool),
 ) !bool {
     if (cancel_flag.load(.seq_cst)) return error.Cancelled;
-    var fds = [_]std.posix.pollfd{.{
-        .fd = listener.socket.handle,
-        .events = std.posix.POLL.IN,
-        .revents = 0,
-    }};
-    const ready = try std.posix.poll(&fds, poll_ms);
+    const ready = if (comptime builtin.os.tag == .windows) blk: {
+        var fds = [_]WindowsPollFd{.{
+            .fd = @intFromPtr(listener.socket.handle),
+            .events = windows_poll_read,
+            .revents = 0,
+        }};
+        const result = WindowsSockets.WSAPoll(&fds, fds.len, poll_ms);
+        if (result < 0) return error.OAuthCallbackListenerFailed;
+        if (result > 0 and fds[0].revents & windows_poll_read == 0) {
+            return error.OAuthCallbackListenerFailed;
+        }
+        break :blk @as(usize, @intCast(result));
+    } else blk: {
+        var fds = [_]std.posix.pollfd{.{
+            .fd = listener.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        break :blk try std.posix.poll(&fds, poll_ms);
+    };
     if (cancel_flag.load(.seq_cst)) return error.Cancelled;
     if (ready == 0) return false;
-    if ((fds[0].revents & std.posix.POLL.IN) == 0) {
-        return error.OAuthCallbackListenerFailed;
-    }
     return true;
 }
 
@@ -160,12 +188,23 @@ fn requestReadable(
             0
         else
             @intCast(@min(remaining_ms, poll_ms));
-        var fds = [_]std.posix.pollfd{.{
-            .fd = socket,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        }};
-        const ready = try std.posix.poll(&fds, wait_ms);
+        const ready = if (comptime builtin.os.tag == .windows) blk: {
+            var fds = [_]WindowsPollFd{.{
+                .fd = @intFromPtr(socket),
+                .events = windows_poll_read,
+                .revents = 0,
+            }};
+            const result = WindowsSockets.WSAPoll(&fds, fds.len, wait_ms);
+            if (result < 0) return error.OAuthCallbackListenerFailed;
+            break :blk @as(usize, @intCast(result));
+        } else blk: {
+            var fds = [_]std.posix.pollfd{.{
+                .fd = socket,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            }};
+            break :blk try std.posix.poll(&fds, wait_ms);
+        };
         if (cancel_flag.load(.seq_cst)) return error.Cancelled;
         if (ready != 0) return true;
         if (remaining_ms <= 0) return false;
@@ -331,13 +370,16 @@ fn writePreflightResponse(stream: std.Io.net.Stream, origin: []const u8) !void {
 }
 
 fn setSocketTimeouts(socket: std.posix.socket_t) void {
-    const timeout = std.posix.timeval{ .sec = socket_timeout_seconds, .usec = 0 };
+    const timeout = if (comptime builtin.os.tag == .windows)
+        @as(u32, socket_timeout_seconds * std.time.ms_per_s)
+    else
+        std.posix.timeval{ .sec = socket_timeout_seconds, .usec = 0 };
     const receive_rc = std.c.setsockopt(
         socket,
         std.c.SOL.SOCKET,
         std.c.SO.RCVTIMEO,
         &timeout,
-        @sizeOf(std.posix.timeval),
+        @sizeOf(@TypeOf(timeout)),
     );
     if (receive_rc != 0) {
         const err = std.posix.errno(receive_rc);
@@ -348,7 +390,7 @@ fn setSocketTimeouts(socket: std.posix.socket_t) void {
         std.c.SOL.SOCKET,
         std.c.SO.SNDTIMEO,
         &timeout,
-        @sizeOf(std.posix.timeval),
+        @sizeOf(@TypeOf(timeout)),
     );
     if (send_rc != 0) {
         const err = std.posix.errno(send_rc);

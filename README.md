@@ -1,3 +1,7 @@
+This is the `ripgrim/fx` fork. See [Fork releases](docs/fork-releases.md) for CI
+and publishing. This fork currently publishes Linux x86_64 binaries only.
+Upstream installation links below install upstream fx, not this fork.
+
 ```
  ⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀
  ⠀⠀⠀⠀⠀⢰⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -105,9 +109,29 @@ Foreground terminal commands run with an explicit finite deadline. fx uses durab
 
 fx starts in `auto` permission mode. Routine understood development actions run directly. Each unresolved action receives one narrow safety review based on the current user request and the exact pending action. A clear result authorizes only that action. A caution or unavailable review holds the action and returns advice to the agent without opening a permission prompt or ending the turn. See [Permissions](https://fx.sh/docs/configure-fx/permissions) for other modes and persistent rules.
 
+Press `Shift+Tab` to cycle `ask`, `auto`, `YOLO`, and purple `DESIGN` mode. The experimental Design mode installs the bundled `fx_design` helper into the profile and adds Paper's local MCP at `http://127.0.0.1:29979/mcp` when no `paper` entry exists. Existing named MCP configurations are preserved. The helper captures rendered pages through agent-browser, stores source snapshots per saved session, and prepares exact Paper operations for normal fx tool dispatch. Source captures exclude Next.js developer overlays while preserving ordinary application portals and iframes. Verification uses structured capture and artboard identities instead of confidence strings. Bun and native agent-browser must currently be installed in the same environment as fx; automatic runtime installation and verified Paper-to-code application are not implemented. See [Design mode](docs/design-mode.md) for the current limitations.
+
 JSON and quiet requests stay noninteractive by default. Add `--prompt-permissions` to allow configured approval prompts when stdin is a TTY. Automatic safety review never opens that prompt. Prompt text is written to stderr, so JSON stdout stays parseable and quiet stdout stays empty. Piped or redirected stdin remains noninteractive and fails instead of waiting for approval.
 
+Design imports checkpoint automatically after managed Paper operations. Full receipts are retained separately from bounded agent output, allowing interrupted receipt recording to recover without repeating the Paper write. Blocked verification ends without a forced retry loop. The TUI shows verification state and a review link; the first meaningful comparison opens a reusable local browser inspector that updates at subsequent checkpoints. When a preview is ready, the footer offers `ctrl+d` to reopen it without changing your draft. A synchronized lightbox supports zooming and panning source, Paper, and difference images. Receipt-mapped dimension/border findings and approximate red/green pixel residuals remain distinct. Intentional design edits are recorded as changes, not automatically reverted to the import baseline.
+
+Verification ignores tiny dimension rounding (up to 1/32 CSS px) and low-intensity pixel noise (up to 16/255 per channel), consistently in the gate and overlay. Missing borders remain independently checked; small details are not discarded based on their percentage of the image.
+
 Inside a saved session, `/permissions remember <allow|deny> <tool-name> <arguments-json>` stores an exact confirmed rule without running the action. `/permissions` lists stable rule IDs, and `/permissions revoke <rule-id>` removes a stored rule even when its original workspace or file state has changed.
+
+Stateful design captures use an isolated browser with optional explicit storage and a readiness selector. DOM and screenshot consistency checks reject changing captures before import; they do not inherit your open browser tab's state.
+
+Use `/diff node:ID URL` to capture a live page and compare it with Paper, without an import or AI turn. The host returns a clickable viewer link; Ctrl+D opens the latest comparison. Omit `node:ID` to use the current Paper selection. Without a URL, `/diff`, `/diff node:ID`, `/diff capture:ID`, and linked routes resolve existing workspace imports across sessions and capture their source again. Original imports are not modified.
+
+Example: `/diff node:2DY-0 http://localhost:3000/fullscreen/demo/compliance --selector body --height 1000`.
+
+Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `--session-storage`, and `--local-storage`. Quote selectors containing spaces and storage JSON, for example `--session-storage '{"owned":"true"}'`. Captures use an isolated browser's default state unless explicit storage is supplied; they do not inherit your open tab's state. fx hides the Next.js development overlay during capture.
+
+Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.
+
+The viewer uses compact status labels, rounded previews, and an Expand control for synchronized zoom and pan. Expanded view reveals Paper and changes with a draggable divider; arrow keys and Home/End also move it. A Source toggle shows the source screenshot without losing zoom or pan. Diagnostics stay under Details. Capture age alone does not mark evidence outdated; connection loss is shown separately.
+
+Design mode guides natural-language visual comparison requests to the same diff tool. For code components, the agent resolves an existing rendered story or example and its state before comparing; it asks when that target is ambiguous instead of replacing the visual diff with a written style audit.
 
 ## Embed fx
 

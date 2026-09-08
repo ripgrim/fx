@@ -13,12 +13,14 @@ const Channel = update_target.Channel;
 const Target = update_target.Target;
 
 fn setRecvTimeout(conn: *std.http.Client.Connection) void {
-    const sock = conn.stream_writer.stream.socket.handle;
-    const timeout = std.posix.timeval{ .sec = recv_timeout_sec, .usec = 0 };
-    std.posix.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    if (comptime builtin.os.tag == .windows) {} else {
+        const sock = conn.stream_writer.stream.socket.handle;
+        const timeout = std.posix.timeval{ .sec = recv_timeout_sec, .usec = 0 };
+        std.posix.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
 }
 
-pub const cdn_base = "https://releases.fx.sh";
+pub const cdn_base = "https://github.com/ripgrim/fx/releases/download";
 
 pub fn resolveCdnBase() []const u8 {
     if (io_mod.getenv("FX_E2E_UPGRADE_BASE_URL")) |url| {
@@ -46,13 +48,13 @@ fn isLoopbackE2eUpgradeBase(url: []const u8) bool {
     return std.mem.eql(u8, host, "127.0.0.1");
 }
 
-pub const platform = platformFromTarget() orelse
-    @compileError("unsupported platform for auto-upgrade (requires macOS or Linux, x86_64 or aarch64)");
+pub const platform = platformFromTarget() orelse "unsupported";
 
 fn platformFromTarget() ?[]const u8 {
     const os: ?[]const u8 = switch (builtin.os.tag) {
         .macos => "macos",
         .linux => "linux",
+        .windows => "windows",
         else => null,
     };
     const arch: ?[]const u8 = switch (builtin.cpu.arch) {
@@ -95,7 +97,7 @@ pub fn fetchTarget(alloc: Allocator, channel: Channel, base_url: []const u8) !Ta
 fn fetchLatestVersion(alloc: Allocator, base_url: []const u8) ![]u8 {
     var client: std.http.Client = .{ .allocator = alloc, .io = io_mod.getIo() };
     defer client.deinit();
-    const url = try std.fmt.allocPrint(alloc, "{s}/latest.txt", .{base_url});
+    const url = try latestVersionUrl(alloc, base_url);
     defer alloc.free(url);
 
     const raw = try fetchTextBounded(
@@ -110,6 +112,22 @@ fn fetchLatestVersion(alloc: Allocator, base_url: []const u8) ![]u8 {
     const duped = try alloc.dupe(u8, trimmed);
     alloc.free(raw);
     return duped;
+}
+
+// Caller owns the URL. Preserve loopback fixtures while keeping fork updates
+// entirely on this repository's release channel.
+fn latestVersionUrl(alloc: Allocator, base_url: []const u8) ![]u8 {
+    if (std.mem.eql(u8, base_url, cdn_base)) return alloc.dupe(u8, "https://github.com/ripgrim/fx/releases/latest/download/latest.txt");
+    return std.fmt.allocPrint(alloc, "{s}/latest.txt", .{base_url});
+}
+
+test "fork update metadata stays on the fork release channel" {
+    const url = try latestVersionUrl(std.testing.allocator, cdn_base);
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings("https://github.com/ripgrim/fx/releases/latest/download/latest.txt", url);
+    const fixture = try latestVersionUrl(std.testing.allocator, "http://127.0.0.1:1234");
+    defer std.testing.allocator.free(fixture);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/latest.txt", fixture);
 }
 
 fn fetchTextBounded(
@@ -330,7 +348,7 @@ test "E2E upgrade base accepts only explicit IPv4 loopback origins" {
 }
 
 test "production upgrade base uses the fx release domain" {
-    try std.testing.expectEqualStrings("https://releases.fx.sh", resolveCdnBase());
+    try std.testing.expectEqualStrings(cdn_base, resolveCdnBase());
 }
 
 test "extractChecksumHex parses sha256sum format" {

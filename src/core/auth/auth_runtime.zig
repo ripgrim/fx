@@ -1778,7 +1778,18 @@ pub const Runtime = struct {
                     self,
                     loadRuntimeCredentialSource,
                 ),
-            .gateway => if (self.credentialSource() != .chatgpt_subscription and self.credentialSource() != .grok_subscription)
+            .claude => if (self.credentialSource() == .claude_subscription)
+                false
+            else
+                self.selectSourceWithLoader(
+                    alloc,
+                    .claude_subscription,
+                    self,
+                    loadRuntimeCredentialSource,
+                ),
+            .gateway => if (self.credentialSource() != .chatgpt_subscription and
+                self.credentialSource() != .grok_subscription and
+                self.credentialSource() != .claude_subscription)
                 false
             else
                 @as(?bool, try self.reselectByPrecedenceWithDeps(

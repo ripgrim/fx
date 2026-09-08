@@ -16,6 +16,9 @@ pub const Bundle = struct {
         vercel,
         chatgpt,
         grok,
+        /// Delegated: the local Claude Code install owns the subscription
+        /// credential. fx performs no OAuth and stores no token.
+        claude_code,
     };
     pub const Capabilities = struct {
         fx_search: bool = false,
@@ -51,12 +54,14 @@ pub const Set = struct {
     gateway: Bundle,
     codex: Bundle,
     grok: Bundle,
+    claude: Bundle,
 
     pub fn select(self: Set, provider: model_provider.ProviderId) Bundle {
         return switch (provider) {
             .gateway => self.gateway,
             .codex => self.codex,
             .grok => self.grok,
+            .claude => self.claude,
         };
     }
 
@@ -65,6 +70,7 @@ pub const Set = struct {
             .gateway = self.gateway.deferred_usage,
             .codex = self.codex.deferred_usage,
             .grok = self.grok.deferred_usage,
+            .claude = self.claude.deferred_usage,
         };
     }
 };
@@ -74,6 +80,7 @@ pub fn gateway_only(gateway: Bundle) Set {
         .gateway = gateway,
         .codex = .{},
         .grok = .{},
+        .claude = .{},
     };
 }
 
@@ -144,7 +151,7 @@ test "provider set selects each provider's complete route" {
         .model_catalog = .{ .context = &grok_tag, .fetch_fn = Fake.model_catalog_fetch },
         .permission_reviewer = .{ .context = &grok_tag, .review_fn = Fake.review },
     };
-    var providers = Set{ .gateway = gateway, .codex = codex, .grok = grok };
+    var providers = Set{ .gateway = gateway, .codex = codex, .grok = grok, .claude = .{} };
 
     try std.testing.expect(providers.select(.gateway).agent_stream.?.context.? == @as(*anyopaque, @ptrCast(&gateway_tag)));
     try std.testing.expect(providers.select(.gateway).capabilities.fx_search);

@@ -107,6 +107,34 @@ describe("tui: direct-write audit", () => {
           }`,
       },
       {
+        name: "Claude MCP bridge response stream",
+        path: "src/gateway/claude_tool_bridge.zig",
+        accepted: true,
+        source: `const std = @import("std");
+          fn run() !void {
+            var stdout = std.Io.File.stdout().writerStreaming(io, out_buffer);
+            try stdout.interface.writeAll(payload);
+          }`,
+      },
+      {
+        name: "Windows TTY capability probe",
+        path: "src/ui/shell_runtime.zig",
+        accepted: true,
+        source: `const std = @import("std");
+          fn ensureInteractive() !void {
+            if (!(std.Io.File.stdout().isTty(io) catch false)) return error.NotATerminal;
+          }`,
+      },
+      {
+        name: "TTY probe cannot write to stdout",
+        path: "src/ui/shell_runtime.zig",
+        accepted: false,
+        source: `const std = @import("std");
+          fn ensureInteractive() !void {
+            try std.Io.File.stdout().writeStreamingAll(io, "unexpected");
+          }`,
+      },
+      {
         name: "top-level help TTY capability probe",
         path: "src/main.zig",
         accepted: true,

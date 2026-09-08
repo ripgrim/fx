@@ -16,7 +16,7 @@ const urlRequiredOperation = process.env.FX_MCP_URL_REQUIRED_OPERATION ?? "tools
 let buffer = Buffer.alloc(0);
 let messageCount = 0;
 let toolsListCalls = 0;
-let currentToolName = "echo";
+let currentToolName = process.env.FX_MCP_INITIAL_TOOL_NAME ?? "echo";
 let pendingToolCall = null;
 let urlRequiredSent = false;
 let completionStage = 0;
@@ -267,12 +267,13 @@ function handle(message) {
               : {}),
             type: "object",
             properties: {
+              ...(currentToolName === "design_diff" ? { target: { type: "string" }, workspace: { type: "string" }, session_directory: { type: "string" } } : {}),
               text: {
                 type: "string",
                 ...(draft7Pattern ? { pattern: draft7Pattern } : {}),
               },
             },
-            required: ["text"],
+            required: currentToolName === "design_diff" ? [] : ["text"],
           },
           ...(mode === "draft7_schema"
             ? { execution: { taskSupport: "forbidden" } }
@@ -358,8 +359,12 @@ function handle(message) {
     return;
   }
   if (message.method === "tools/call") {
+    if (process.env.FX_MCP_DIFF_DELAY_MS && !message.fixtureDelayed) {
+      setTimeout(() => handle({ ...message, fixtureDelayed: true }), Number(process.env.FX_MCP_DIFF_DELAY_MS));
+      return;
+    }
     const progressToken = message.params?._meta?.progressToken;
-    if (!Number.isInteger(progressToken)) process.exit(4);
+    if (currentToolName !== "design_diff" && !Number.isInteger(progressToken)) process.exit(4);
     if (mode === "direct_form") {
       pendingToolCall = message;
       send({
@@ -428,7 +433,7 @@ function handle(message) {
       result: {
         content: [{
           type: "text",
-          text: `${resultText}:${message.params?.arguments?.text ?? ""}`,
+          text: process.env.FX_MCP_RAW_RESULT === "1" ? resultText : `${resultText}:${message.params?.arguments?.text ?? ""}`,
         }],
       },
     });

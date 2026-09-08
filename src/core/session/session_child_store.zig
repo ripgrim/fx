@@ -3,8 +3,8 @@ const config_runtime = @import("../config/config_runtime.zig");
 const io_mod = @import("../shared/io.zig");
 
 const Allocator = std.mem.Allocator;
-const private_dir_permissions = std.Io.File.Permissions.fromMode(0o700);
-const private_file_permissions = std.Io.File.Permissions.fromMode(0o600);
+const private_dir_permissions = io_mod.permissionsFromMode(0o700);
+const private_file_permissions = io_mod.permissionsFromMode(0o600);
 
 pub const subagent_relationship_index_file = "relationship-index.bin";
 
@@ -1182,7 +1182,7 @@ fn validateName(name: []const u8) !void {
 fn verifyPrivateDirectory(dir: std.Io.Dir) !void {
     const stat = try dir.stat(io_mod.getIo());
     if (stat.kind != .directory) return error.SessionPathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o700) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }
@@ -1197,7 +1197,7 @@ fn verifyPrivateOpenedStat(
 ) !void {
     io_mod.verifyOpenedRegularFile(stat, mode) catch
         return error.SessionPathUnsafe;
-    if (stat.permissions.toMode() & 0o777 != 0o600) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }
@@ -1206,7 +1206,7 @@ fn verifyPrivateStat(stat: std.Io.File.Stat) !void {
     if (stat.kind != .file or stat.nlink != 1) {
         return error.SessionPathUnsafe;
     }
-    if (stat.permissions.toMode() & 0o777 != 0o600) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o600)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }

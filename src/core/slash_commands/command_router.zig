@@ -5,6 +5,7 @@ const SlashKind = command_specs.SlashKind;
 const SlashRegistry = command_specs.SlashRegistry;
 
 pub const ParsedCommand = union(enum) {
+    diff: []const u8,
     quit,
     clear_screen,
     new_session,
@@ -48,6 +49,7 @@ pub const ParsedCommand = union(enum) {
 };
 
 pub const CommandHandlers = struct {
+    handle_diff: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
     ctx: *anyopaque,
     quit: *const fn (ctx: *anyopaque) anyerror!void,
     clear_screen: *const fn (ctx: *anyopaque) anyerror!void,
@@ -97,6 +99,7 @@ fn command_payload(cmd: []const u8, prefix: []const u8) []const u8 {
 
 fn parsedCommand(kind: SlashKind, payload: []const u8) ParsedCommand {
     return switch (kind) {
+        .diff => .{ .diff = payload },
         .quit => .quit,
         .clear_screen => .clear_screen,
         .new_session => .new_session,
@@ -154,6 +157,7 @@ pub fn parse(registry: SlashRegistry, cmd: []const u8) ParsedCommand {
 
 pub fn route(registry: SlashRegistry, handlers: *const CommandHandlers, cmd: []const u8) !void {
     switch (parse(registry, cmd)) {
+        .diff => |rest| try handlers.handle_diff(handlers.ctx, rest),
         .quit => try handlers.quit(handlers.ctx),
         .clear_screen => try handlers.clear_screen(handlers.ctx),
         .new_session => try handlers.new_session(handlers.ctx),
@@ -517,6 +521,7 @@ fn testHandlers(ctx: *TestContext) CommandHandlers {
         .show_usage = unexpectedNoPayload,
         .undo_last = unexpectedNoPayload,
         .handle_mcp = unexpectedPayload,
+        .handle_diff = unexpectedPayload,
         .handle_skills = unexpectedPayload,
         .copy_last = unexpectedNoPayload,
         .submit_feedback = unexpectedNoPayload,

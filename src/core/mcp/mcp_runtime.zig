@@ -3869,6 +3869,28 @@ fn removeServerToolNames(
     }
 }
 
+fn toolAnnotationsReadOnly(alloc: Allocator, annotations: ?[]const u8) !bool {
+    const json = annotations orelse return false;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const hint = parsed.value.object.get("readOnlyHint") orelse return false;
+    return hint == .bool and hint.bool;
+}
+
+test "MCP annotations expose explicit boolean flag" {
+    try std.testing.expect(try toolAnnotationsReadOnly(
+        std.testing.allocator,
+        "{\"readOnlyHint\":true}",
+    ));
+    try std.testing.expect(!try toolAnnotationsReadOnly(
+        std.testing.allocator,
+        "{\"readOnlyHint\":false}",
+    ));
+    try std.testing.expect(!try toolAnnotationsReadOnly(std.testing.allocator, "{}"));
+    try std.testing.expect(!try toolAnnotationsReadOnly(std.testing.allocator, null));
+}
+
 pub const McpRuntime = struct {
     alloc: Allocator,
     generation: u64,
@@ -5954,6 +5976,19 @@ pub const McpRuntime = struct {
         return true;
     }
 
+    pub fn toolReadOnlyByNameWithAccess(
+        self: *McpRuntime,
+        alloc: Allocator,
+        name: []const u8,
+        access: tool_mcp_runtime.Access,
+    ) !bool {
+        if (!self.hasToolWithAccess(name, access)) return false;
+        self.catalog_mutex.lockSharedUncancelable(io_mod.getIo());
+        defer self.catalog_mutex.unlockShared(io_mod.getIo());
+        const found = self.lookupCallableTool(name) orelse return false;
+        return toolAnnotationsReadOnly(alloc, found.tool.annotations_json);
+    }
+
     pub fn serverToolFreshness(self: *McpRuntime, name: []const u8) ?ToolFreshness {
         if (self.isDiscovering()) return null;
         self.catalog_mutex.lockSharedUncancelable(io_mod.getIo());
@@ -6906,7 +6941,7 @@ pub const McpRuntime = struct {
         }
         std.debug.assert(connection_locked);
 
-        const raw_frame_cap = mcpResponseFrameCap(max_tool_result_bytes);
+        const raw_frame_cap = tool_response_frame_cap(snapshot.prefixed_name, max_tool_result_bytes);
         var lease_active = true;
         var retried_unsent_call = false;
         errdefer if (lease_active) {
@@ -10726,6 +10761,18 @@ fn mcpResponseFrameCap(max_tool_result_bytes: usize) usize {
     return std.math.add(usize, max_tool_result_bytes, mcp_response_frame_overhead_bytes) catch std.math.maxInt(usize);
 }
 
+fn tool_response_frame_cap(name: []const u8, model_bytes: usize) usize {
+    // Screenshot base64 is transport data, not a model-text budget. Keep this
+    // exception bounded and exact; other MCP servers retain their normal cap.
+    const bytes = if (std.mem.eql(u8, name, "mcp_paper_get_screenshot")) @max(model_bytes, 16 * 1024 * 1024) else model_bytes;
+    return mcpResponseFrameCap(bytes);
+}
+
+test "Paper screenshot transport budget is independent and narrowly scoped" {
+    try std.testing.expectEqual(mcpResponseFrameCap(16 * 1024 * 1024), tool_response_frame_cap("mcp_paper_get_screenshot", 65536));
+    try std.testing.expectEqual(mcpResponseFrameCap(65536), tool_response_frame_cap("mcp_other_get_screenshot", 65536));
+}
+
 const LegacyInitializeSuccess = struct {
     owned_response: []u8,
     version: LegacyStdioVersion,
@@ -13178,7 +13225,7 @@ fn callToolHttp(
     );
     defer alloc.free(request_body);
 
-    const raw_frame_cap = mcpResponseFrameCap(max_tool_result_bytes);
+    const raw_frame_cap = tool_response_frame_cap(snapshot.prefixed_name, max_tool_result_bytes);
     var response = authenticatedPost(alloc, self.alloc, server, .{
         .url = try server.config.remoteUrl(),
         .static_headers = server.resolved_headers,
@@ -13539,7 +13586,7 @@ fn callToolLegacyHttp(
     );
     defer alloc.free(request_body);
 
-    const raw_frame_cap = mcpResponseFrameCap(max_tool_result_bytes);
+    const raw_frame_cap = tool_response_frame_cap(prefixed_name, max_tool_result_bytes);
     var committed = std.atomic.Value(bool).init(false);
     var elicitation_context: ?LegacyElicitationContext = if (legacyWireForHttpVersion(client.version)) |wire|
         LegacyElicitationContext.initHttp(
@@ -14470,7 +14517,7 @@ fn callToolSse(
         .{},
     );
     defer alloc.free(request_body);
-    const raw_frame_cap = mcpResponseFrameCap(max_tool_result_bytes);
+    const raw_frame_cap = tool_response_frame_cap(snapshot.prefixed_name, max_tool_result_bytes);
     var tool_precommit = ToolPrecommit{
         .runtime = self,
         .server = server,

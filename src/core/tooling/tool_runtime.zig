@@ -68,6 +68,8 @@ const web_search_contract = @import("web_search_contract.zig");
 const web_fetch_artifacts = @import("../session/web_fetch_artifacts.zig");
 const types = @import("../shared/types.zig");
 const model_provider = @import("../config/model_provider.zig");
+const design_mode = @import("../modes/design_mode.zig");
+const design_helper = @import("../design/managed_helper.zig");
 const provider_set = @import("../gateway/provider_set.zig");
 const credential_authority = @import("../auth/credential_authority.zig");
 const worker_runtime = @import("../agent/worker_runtime.zig");
@@ -127,6 +129,7 @@ test {
 
 pub const Context = struct {
     workspace_root: []const u8,
+    interaction_mode: []const u8 = "",
     access_scope: ?workspace_access.AccessScope = null,
     ignored_list_entries: []const []const u8,
     max_list_entries: usize,
@@ -198,6 +201,7 @@ pub const Context = struct {
     tracker: ?*change_tracker.ChangeTracker = null,
     mcp_ctx: ?*anyopaque = null,
     mcp_has_tool: ?tool_mcp_runtime.HasToolFn = null,
+    mcp_tool_read_only: ?tool_mcp_runtime.ToolReadOnlyFn = null,
     mcp_validate_tool: ?tool_mcp_runtime.ValidateToolFn = null,
     mcp_call_tool: ?tool_mcp_runtime.CallToolFn = null,
     mcp_search_tools: ?tool_mcp_runtime.SearchToolsFn = null,
@@ -238,6 +242,7 @@ pub const Context = struct {
     pub fn admissionInput(self: Context) tool_admission.Input {
         var input: tool_admission.Input = .{
             .workspace_root = self.workspace_root,
+            .interaction_mode = self.interaction_mode,
             .access_scope = self.access_scope,
             .permission_review_turn = self.permission_review_turn,
             .permission_grants = self.permission_grants,
@@ -360,6 +365,11 @@ pub fn executeToolCallAuthorized(
     ctx: Context,
     request: tool_contracts.ToolExecutionRequest,
 ) !ToolExecutionResult {
+    if (std.mem.eql(u8, request.call.name, "mcp_fx_design_record_result") or std.mem.eql(u8, request.call.name, "mcp_fx_design_resolve_operation")) return .{
+        .status = .failure,
+        .status_detail = "DesignHostOnlyOperation",
+        .model_output = try request.result_allocator.dupe(u8, "Paper results are recorded by fx directly. Assistant-supplied receipts are not accepted."),
+    };
     var replay_continuation_transferred = request.command_replay_capture == null;
     defer if (!replay_continuation_transferred) {
         request.command_replay_capture.?.abort(request.result_allocator);
@@ -393,10 +403,160 @@ pub fn executeToolCallAuthorized(
     execution_ctx.max_tool_result_bytes = request.max_tool_result_bytes;
     execution_ctx.expected_mcp_runtime_generation = request.expected_mcp_runtime_generation;
     execution_ctx.current_turn_messages = request.current_turn_messages;
+    if (request.root_user_intent_context.len > 0) {
+        execution_ctx.root_user_intent_context = request.root_user_intent_context;
+    }
+    if (request.root_user_messages.len > 0) {
+        execution_ctx.root_user_messages = request.root_user_messages;
+    }
+    if (request.root_user_evidence_complete) {
+        execution_ctx.root_user_evidence_complete = true;
+    }
     execution_ctx.output_chunk_lifecycle_id = request.lifecycle_id;
     execution_ctx.command_timeout_started_ms = request.command_timeout_started_ms;
     execution_ctx.command_replay_capture = request.command_replay_capture;
     execution_ctx.command_replay_unavailable = request.command_replay_unavailable;
+
+    var bound_call = request.call;
+    const bound_arguments = if (std.mem.startsWith(u8, request.call.name, "mcp_fx_design_"))
+        try design_helper.bindArguments(request.result_allocator, request.call.arguments_json, execution_ctx.lifecycle_scope.session_id)
+    else
+        null;
+    defer if (bound_arguments) |arguments| request.result_allocator.free(arguments);
+    if (bound_arguments) |arguments| bound_call.arguments_json = arguments;
+    if (std.mem.eql(u8, request.call.name, "mcp_fx_design_execute")) {
+        if (!std.mem.eql(u8, execution_ctx.interaction_mode, design_mode.id)) return error.DesignModeRequired;
+        const call_mcp = execution_ctx.mcp_call_tool orelse return error.DesignHelperUnavailable;
+        const mcp_ctx = execution_ctx.mcp_ctx orelse return error.DesignHelperUnavailable;
+        var resolved = try call_mcp(mcp_ctx, request.result_allocator, "mcp_fx_design_resolve_operation", bound_call.arguments_json, 32 * 1024 * 1024, .{
+            .expected_runtime_generation = execution_ctx.expected_mcp_runtime_generation,
+            .cancel_flag = execution_ctx.cancel_flag,
+            .input_responder = execution_ctx.mcp_input_responder,
+            .access = execution_ctx.mcp_access,
+        }) orelse return error.DesignOperationUnavailable;
+        defer resolved.deinit(request.result_allocator);
+        const Operation = struct { tool: []const u8, arguments: std.json.Value };
+        const resolved_json = try design_helper.resultJson(request.call_allocator, resolved.model_output);
+        defer request.call_allocator.free(resolved_json);
+        var operation = try std.json.parseFromSlice(Operation, request.call_allocator, resolved_json, .{ .ignore_unknown_fields = true });
+        defer operation.deinit();
+        if (!design_mode.isPaperMutationTool(operation.value.tool)) return error.InvalidDesignOperation;
+        var payload: std.Io.Writer.Allocating = .init(request.call_allocator);
+        defer payload.deinit();
+        try std.json.Stringify.value(operation.value.arguments, .{}, &payload.writer);
+        var effective_request = request;
+        effective_request.call = .{ .id = request.call.id, .name = operation.value.tool, .arguments_json = payload.written() };
+        // Host-resolved payloads need schema validation and permission, not a
+        // second model discovery step. MCP access scopes remain unchanged.
+        execution_ctx.advertised_dynamic_tool_names = &.{operation.value.tool};
+        effective_request.advertised_dynamic_tool_names = execution_ctx.advertised_dynamic_tool_names;
+        switch (try resolveToolDispatchPrelude(execution_ctx, request.result_allocator, effective_request.call, false)) {
+            .completed => |failure| return failure,
+            else => {},
+        }
+        switch (try validateToolCall(execution_ctx, request.call_allocator, effective_request.call)) {
+            .valid => |witness| effective_request.expected_mcp_runtime_generation = witness.mcp_runtime_generation,
+            .not_registered => return error.DesignPaperToolNotSelected,
+            .failure => |message| return .{ .status = .failure, .status_detail = "DesignOperationInvalid", .model_output = try request.result_allocator.dupe(u8, message) },
+        }
+        // Permission for the wrapper never substitutes for permission on its write.
+        const permission = try tool_admission.requestPermissionOutcome(execution_ctx.admissionInput(), request.call_allocator, effective_request.call, execution_ctx.permission_mode, execution_ctx.session_grants);
+        if (permission.decision.isDenied()) return .{
+            .status = .failure,
+            .status_detail = "DesignOperationPermissionDenied",
+            .model_output = try request.result_allocator.dupe(u8, permission.tool_failure orelse permission.feedback orelse "The prepared Paper operation was not authorized. No mutation was executed."),
+        };
+        effective_request.authority = permission.execution_authority orelse .ordinary;
+        effective_request.classification_complete = false;
+        effective_request.command_replay_capture = null;
+        // Preserve the actual Paper response through receipt recording. Bound
+        // the model-facing text only after the host transaction finishes.
+        effective_request.max_tool_result_bytes = 32 * 1024 * 1024;
+        var executed = try executeToolCallAuthorized(execution_ctx, effective_request);
+        const display = @import("tool_result_limits.zig").prepareModelOutput(request.result_allocator, request.call.name, executed.model_output, request.max_tool_result_bytes) catch return executed;
+        request.result_allocator.free(@constCast(executed.model_output));
+        executed.model_output = display;
+        return executed;
+    }
+    var source_validated = false;
+    var design_proof: ?[]u8 = null;
+    defer if (design_proof) |proof| request.result_allocator.free(proof);
+    if (try design_mode.automatic_preflight_arguments(
+        request.result_allocator,
+        execution_ctx.interaction_mode,
+        request.call.name,
+        request.call.arguments_json,
+    )) |preflight_arguments| {
+        defer request.result_allocator.free(preflight_arguments);
+        const preflight_name = "mcp_fx_design_preflight";
+        const scoped_preflight_arguments = try design_helper.bindArguments(request.result_allocator, preflight_arguments, execution_ctx.lifecycle_scope.session_id);
+        defer request.result_allocator.free(scoped_preflight_arguments);
+        const has_preflight = if (execution_ctx.mcp_ctx != null and execution_ctx.mcp_has_tool != null)
+            execution_ctx.mcp_has_tool.?(
+                execution_ctx.mcp_ctx.?,
+                preflight_name,
+                execution_ctx.mcp_access,
+            )
+        else
+            false;
+        if (!has_preflight or execution_ctx.mcp_call_tool == null) {
+            return .{
+                .status = .failure,
+                .status_detail = "DesignPreflightBlocked",
+                .model_output = try request.result_allocator.dupe(u8, "design-preflight: blocked — the managed design preflight tool is unavailable; no Paper mutation was executed"),
+            };
+        }
+        var preflight = execution_ctx.mcp_call_tool.?(
+            execution_ctx.mcp_ctx.?,
+            request.result_allocator,
+            preflight_name,
+            scoped_preflight_arguments,
+            execution_ctx.max_tool_result_bytes,
+            .{
+                .expected_runtime_generation = execution_ctx.expected_mcp_runtime_generation,
+                .cancel_flag = execution_ctx.cancel_flag,
+                .input_responder = execution_ctx.mcp_input_responder,
+                .access = execution_ctx.mcp_access,
+            },
+        ) catch |err| {
+            return .{
+                .status = .failure,
+                .status_detail = "DesignPreflightBlocked",
+                .model_output = try std.fmt.allocPrint(request.result_allocator, "design-preflight: blocked — validator failed: {s}; no Paper mutation was executed", .{@errorName(err)}),
+            };
+        } orelse return .{
+            .status = .failure,
+            .status_detail = "DesignPreflightBlocked",
+            .model_output = try request.result_allocator.dupe(u8, "design-preflight: blocked — validator returned no result; no Paper mutation was executed"),
+        };
+        defer preflight.deinit(request.result_allocator);
+        const preflight_json = try design_helper.resultJson(request.result_allocator, preflight.model_output);
+        defer request.result_allocator.free(preflight_json);
+        if (!design_mode.automatic_preflight_clean(preflight_json)) {
+            return .{
+                .status = .failure,
+                .status_detail = "DesignPreflightBlocked",
+                .model_output = try std.fmt.allocPrint(request.result_allocator, "{s}\nNo Paper mutation was executed.", .{preflight.model_output}),
+            };
+        }
+        source_validated = true;
+        design_proof = try request.result_allocator.dupe(u8, preflight_json);
+    }
+
+    if (try design_mode.paper_mutation_regression(
+        request.result_allocator,
+        execution_ctx.interaction_mode,
+        request.call.name,
+        request.call.arguments_json,
+        execution_ctx.root_user_intent_context,
+        source_validated,
+    )) |regression| {
+        return .{
+            .status = .failure,
+            .status_detail = "DesignRegression",
+            .model_output = regression,
+        };
+    }
 
     const started_at_ms = io_mod.milliTimestamp();
     const uses_file_mutation_contract = if (registeredToolSpec(
@@ -406,11 +566,11 @@ pub fn executeToolCallAuthorized(
         spec.take_file_mutation_input_fn != null
     else
         false;
-    const result = (if (comptime builtin.os.tag == .wasi)
+    var result = (if (comptime builtin.os.tag == .wasi)
         executeWorkspaceToolCallInner(
             execution_ctx,
             request.result_allocator,
-            request.call,
+            bound_call,
             request.authority,
             request.classification_complete,
         )
@@ -430,7 +590,7 @@ pub fn executeToolCallAuthorized(
         executeToolCallInner(
             execution_ctx,
             request.result_allocator,
-            request.call,
+            bound_call,
             request.authority,
             request.classification_complete,
             request.authorized_image_catalog,
@@ -444,6 +604,114 @@ pub fn executeToolCallAuthorized(
         });
         return if (err == error.CancelledBeforeExecution) error.Cancelled else err;
     };
+    if (result.status == .success) {
+        if (design_proof) |proof| {
+            design_helper.recordResult(request.result_allocator, execution_ctx.mcp_ctx.?, execution_ctx.mcp_call_tool.?, .{
+                .expected_runtime_generation = execution_ctx.expected_mcp_runtime_generation,
+                .cancel_flag = execution_ctx.cancel_flag,
+                .input_responder = execution_ctx.mcp_input_responder,
+                .access = execution_ctx.mcp_access,
+            }, execution_ctx.lifecycle_scope.session_id, proof, result.model_output, execution_ctx.max_tool_result_bytes) catch |err| {
+                const original = result.model_output;
+                result.model_output = try std.fmt.allocPrint(request.result_allocator, "{s}\nPaper executed, but its receipt could not be recorded ({s}). Do not repeat the mutation; reconcile the outstanding operation.", .{ original, @errorName(err) });
+                request.result_allocator.free(@constCast(original));
+                result.status_detail = "DesignReceiptUnresolved";
+                return result;
+            };
+        }
+        if (if (design_proof) |proof| try design_helper.checkpointArguments(request.result_allocator, proof) else try design_mode.automatic_check_arguments(
+            request.result_allocator,
+            execution_ctx.interaction_mode,
+            request.call.name,
+            request.call.arguments_json,
+        )) |check_arguments| {
+            defer request.result_allocator.free(check_arguments);
+            const check_name = "mcp_fx_design_check";
+            const scoped_check_arguments = try design_helper.bindArguments(request.result_allocator, check_arguments, execution_ctx.lifecycle_scope.session_id);
+            defer request.result_allocator.free(scoped_check_arguments);
+            const has_check = if (execution_ctx.mcp_ctx != null and execution_ctx.mcp_has_tool != null)
+                execution_ctx.mcp_has_tool.?(
+                    execution_ctx.mcp_ctx.?,
+                    check_name,
+                    execution_ctx.mcp_access,
+                )
+            else
+                false;
+            if (has_check and execution_ctx.mcp_call_tool != null) {
+                var checkpoint_failed = false;
+                var checkpoint = execution_ctx.mcp_call_tool.?(
+                    execution_ctx.mcp_ctx.?,
+                    request.result_allocator,
+                    check_name,
+                    scoped_check_arguments,
+                    execution_ctx.max_tool_result_bytes,
+                    .{
+                        .expected_runtime_generation = execution_ctx.expected_mcp_runtime_generation,
+                        .cancel_flag = execution_ctx.cancel_flag,
+                        .input_responder = execution_ctx.mcp_input_responder,
+                        .access = execution_ctx.mcp_access,
+                    },
+                ) catch blk: {
+                    checkpoint_failed = true;
+                    break :blk null;
+                };
+                if (checkpoint) |*check| {
+                    defer check.deinit(request.result_allocator);
+                    const check_json = design_helper.resultJson(request.result_allocator, check.model_output) catch try request.result_allocator.dupe(u8, check.model_output);
+                    defer request.result_allocator.free(check_json);
+                    const original_output = result.model_output;
+                    result.model_output = try std.fmt.allocPrint(
+                        request.result_allocator,
+                        "{s}\n\n[AUTOMATIC DESIGN CHECK]\n{s}",
+                        .{ original_output, check_json },
+                    );
+                    request.result_allocator.free(@constCast(original_output));
+                    if (!design_mode.automatic_check_clean(check_json) and !design_mode.automatic_check_pending(check_json)) {
+                        result.status_detail = "DesignRegression";
+                        result.system_notice = "Design regression detected. Repair the findings and run mcp_fx_design_verify before claiming verification.";
+                    }
+                    if (try design_helper.inspectorNotice(request.result_allocator, check_json, execution_ctx.interactive)) |notice| {
+                        result.interactive_notice = .{ .topic = "design verification", .tone = .information, .body = notice };
+                    }
+                } else {
+                    const original_output = result.model_output;
+                    result.model_output = try std.fmt.allocPrint(
+                        request.result_allocator,
+                        "{s}\n\n[AUTOMATIC DESIGN CHECK]\nDesign validator {s}. Retry mcp_fx_design_verify before continuing; pixel-parity completion is blocked.",
+                        .{ original_output, if (checkpoint_failed) "failed" else "returned no result" },
+                    );
+                    request.result_allocator.free(@constCast(original_output));
+                    result.status_detail = "DesignValidatorUnavailable";
+                    result.system_notice = "Design validator failed. Pixel-parity completion is blocked until mcp_fx_design_verify succeeds.";
+                }
+            } else {
+                const original_output = result.model_output;
+                result.model_output = try std.fmt.allocPrint(
+                    request.result_allocator,
+                    "{s}\n\n[AUTOMATIC DESIGN CHECK]\nDesign validator unavailable. Configure and trust the project `design` MCP; pixel-parity completion is blocked.",
+                    .{original_output},
+                );
+                request.result_allocator.free(@constCast(original_output));
+                result.status_detail = "DesignValidatorUnavailable";
+                result.system_notice = "Design validator unavailable. Pixel-parity completion is blocked.";
+            }
+        }
+    }
+
+    if (result.status == .success and (std.mem.eql(u8, request.call.name, "mcp_fx_design_check") or std.mem.eql(u8, request.call.name, "mcp_fx_design_verify"))) {
+        const check_json = design_helper.resultJson(request.result_allocator, result.model_output) catch try request.result_allocator.dupe(u8, "{}");
+        defer request.result_allocator.free(check_json);
+        if (try design_helper.inspectorNotice(request.result_allocator, check_json, execution_ctx.interactive)) |notice| {
+            result.interactive_notice = .{ .topic = "design verification", .tone = .information, .body = notice };
+        }
+    }
+    if (result.status == .success and std.mem.eql(u8, request.call.name, "mcp_fx_design_diff")) {
+        const json = design_helper.resultJson(request.result_allocator, result.model_output) catch try request.result_allocator.dupe(u8, "{}");
+        defer request.result_allocator.free(json);
+        if (try design_helper.diffResultNotice(request.result_allocator, json)) |notice| {
+            result.interactive_notice = .{ .topic = "diff", .tone = .information, .body = notice };
+        }
+    }
     const ok = switch (result.status) {
         .success => true,
         else => false,
@@ -493,6 +761,9 @@ pub fn executeToolCall(
         .result_allocator = arena,
         .call = call,
         .authority = .ordinary,
+        .root_user_intent_context = ctx.root_user_intent_context,
+        .root_user_messages = ctx.root_user_messages,
+        .root_user_evidence_complete = ctx.root_user_evidence_complete,
         .current_turn_messages = ctx.current_turn_messages,
         .session_grants = ctx.session_grants,
         .advertised_dynamic_tool_names = ctx.advertised_dynamic_tool_names,
@@ -1208,6 +1479,7 @@ fn mcpRuntimeCapabilities(ctx: Context) tool_mcp_runtime.RuntimeCapabilities {
     return .{
         .context = ctx.mcp_ctx,
         .has_tool = ctx.mcp_has_tool,
+        .tool_read_only = ctx.mcp_tool_read_only,
         .validate_tool = ctx.mcp_validate_tool,
         .call_tool = ctx.mcp_call_tool,
         .tool_schema = ctx.mcp_tool_schema,
@@ -2229,6 +2501,7 @@ const TestRuntime = struct {
     model: []const u8 = "",
     session_allocator: Allocator = std.testing.allocator,
     workspace_root: []const u8 = "/tmp",
+    interaction_mode: []const u8 = "",
     ignored_list_entries: []const []const u8 = &.{},
     skills_dir: []const u8 = "",
     tracker: ?*change_tracker.ChangeTracker = null,
@@ -2256,6 +2529,7 @@ const TestRuntime = struct {
     interactive: bool = true,
     mcp_ctx: ?*anyopaque = null,
     mcp_has_tool: ?tool_mcp_runtime.HasToolFn = null,
+    mcp_tool_read_only: ?tool_mcp_runtime.ToolReadOnlyFn = null,
     mcp_validate_tool: ?tool_mcp_runtime.ValidateToolFn = null,
     mcp_call_tool: ?tool_mcp_runtime.CallToolFn = null,
     mcp_search_tools: ?tool_mcp_runtime.SearchToolsFn = null,
@@ -2285,6 +2559,7 @@ const TestRuntime = struct {
     fn context(self: *TestRuntime) Context {
         return .{
             .workspace_root = self.workspace_root,
+            .interaction_mode = self.interaction_mode,
             .ignored_list_entries = self.ignored_list_entries,
             .max_list_entries = 100,
             .max_read_file_bytes = 64 * 1024,
@@ -2331,6 +2606,7 @@ const TestRuntime = struct {
             .tracker = self.tracker,
             .mcp_ctx = self.mcp_ctx,
             .mcp_has_tool = self.mcp_has_tool,
+            .mcp_tool_read_only = self.mcp_tool_read_only,
             .mcp_validate_tool = self.mcp_validate_tool,
             .mcp_call_tool = self.mcp_call_tool,
             .mcp_search_tools = self.mcp_search_tools,
@@ -7072,6 +7348,14 @@ const McpFixture = struct {
         expected_runtime_generation: ?u64 = null,
     };
 
+    const DesignCheckpointContext = struct {
+        large_result: bool = false,
+        preflight_calls: usize = 0,
+        paper_calls: usize = 0,
+        check_calls: usize = 0,
+        receipt_calls: usize = 0,
+    };
+
     fn hasTrue(_: *anyopaque, _: []const u8, _: tool_mcp_runtime.Access) bool {
         return true;
     }
@@ -7117,6 +7401,43 @@ const McpFixture = struct {
 
     fn callFailure(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8, _: usize, _: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
         return error.McpFixtureFailure;
+    }
+
+    fn callDesignCheckpoint(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, max_bytes: usize, _: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
+        const ctx: *DesignCheckpointContext = @ptrCast(@alignCast(raw_ctx));
+        if (std.mem.eql(u8, name, "mcp_fx_design_resolve_operation")) {
+            return .{ .model_output = try arena.dupe(u8, "{\"tool\":\"mcp_paper_write_html\",\"arguments\":{\"fileId\":\"file-1\",\"targetNodeId\":\"node-1\",\"html\":\"<div>Exact stored payload</div>\",\"mode\":\"insert-children\"}}") };
+        }
+        if (std.mem.eql(u8, name, "mcp_fx_design_preflight")) {
+            ctx.preflight_calls += 1;
+            return .{ .model_output = try arena.dupe(u8, "{\"version\":1,\"status\":\"clean\",\"capture_id\":\"capture-1\",\"source_revision\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"operation_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\"}") };
+        }
+        if (std.mem.eql(u8, name, "mcp_paper_write_html")) {
+            ctx.paper_calls += 1;
+            try std.testing.expect(max_bytes >= 32 * 1024 * 1024);
+            return .{ .model_output = try arena.dupe(u8, if (ctx.large_result) "{\"createdNodes\":[],\"padding\":\"" ++ "x" ** (80 * 1024) ++ "\"}" else "{\"createdNodes\":[]}") };
+        }
+        if (std.mem.eql(u8, name, "mcp_fx_design_record_result")) {
+            ctx.receipt_calls += 1;
+            var receipt = try std.json.parseFromSlice(std.json.Value, arena, arguments_json, .{});
+            defer receipt.deinit();
+            try std.testing.expectEqualStrings(if (ctx.large_result) "{\"createdNodes\":[],\"padding\":\"" ++ "x" ** (80 * 1024) ++ "\"}" else "{\"createdNodes\":[]}", receipt.value.object.get("result_json").?.string);
+            return .{ .model_output = try arena.dupe(u8, "{\"status\":\"recorded\"}") };
+        }
+        if (std.mem.eql(u8, name, "mcp_fx_design_check")) {
+            ctx.check_calls += 1;
+            if (std.mem.indexOf(u8, arguments_json, "\"capture_id\":\"capture-1\"") == null or
+                std.mem.indexOf(u8, arguments_json, "\"session_directory\":") == null)
+            {
+                return error.TestUnexpectedResult;
+            }
+            return .{ .model_output = try arena.dupe(u8, "design-check: regression; confidence 9/10") };
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    fn validateDesign(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8, _: tool_mcp_runtime.Access) anyerror!tool_mcp_runtime.ValidationResult {
+        return .{ .valid = 1 };
     }
 
     fn search(_: *anyopaque, arena: Allocator, request: capability_retrieval.Request, _: types.PermissionRuleSet, _: context_limits.Values) anyerror!tool_mcp_runtime.SearchResult {
@@ -7285,6 +7606,57 @@ test "MCP dynamic tool executes after its schema was advertised" {
 
     try expectToolOutput(rt.context(), "mcp_fs_read", "{}", "mcp ok");
     try std.testing.expectEqual(@as(usize, 1), counting.calls);
+}
+
+test "Design mode executes stored payloads and records actual Paper results" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const test_home = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, ".");
+    defer std.testing.allocator.free(test_home);
+    try setTestHome(test_home);
+    defer setTestHome(null) catch {};
+    var checkpoint = McpFixture.DesignCheckpointContext{};
+    const advertised = [_][]const u8{"mcp_fx_design_execute"};
+    var rt = TestRuntime{
+        .interaction_mode = design_mode.id,
+        .mcp_ctx = @ptrCast(&checkpoint),
+        .mcp_has_tool = McpFixture.hasTrue,
+        .mcp_call_tool = McpFixture.callDesignCheckpoint,
+        .mcp_validate_tool = McpFixture.validateDesign,
+        .advertised_dynamic_tool_names = &advertised,
+    };
+    defer rt.deinit(std.testing.allocator);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var execution_context = rt.context();
+    execution_context.lifecycle_scope.session_id = "design-checkpoint";
+    const result = try executeToolCall(execution_context, arena_state.allocator(), .{
+        .id = "paper-write",
+        .name = "mcp_fx_design_execute",
+        .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.preflight_calls);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.paper_calls);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.receipt_calls);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.check_calls);
+    try std.testing.expectEqualStrings("DesignRegression", result.status_detail.?);
+    try expectContains(result.model_output, "[AUTOMATIC DESIGN CHECK]");
+    try expectContains(result.model_output, "confidence 9/10");
+    const forged = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "forged", .name = "mcp_fx_design_record_result", .arguments_json = "{}" });
+    try std.testing.expectEqualStrings("DesignHostOnlyOperation", forged.status_detail.?);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.receipt_calls);
+    var rules = [_]types.PermissionRule{.{ .permission = @constCast("mcp_paper_write_html"), .pattern = @constCast("*"), .action = .deny }};
+    execution_context.permission_rules = .{ .rules = &rules };
+    const denied = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "denied", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
+    try std.testing.expectEqualStrings("DesignOperationPermissionDenied", denied.status_detail.?);
+    try std.testing.expectEqual(@as(usize, 1), checkpoint.paper_calls);
+    execution_context.permission_rules = .{};
+    checkpoint.large_result = true;
+    const large = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "large", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
+    try std.testing.expectEqual(@as(usize, 2), checkpoint.receipt_calls);
+    try std.testing.expect(large.model_output.len <= rt.max_tool_result_bytes);
 }
 
 test "MCP execution binds the last live action generation before transport" {

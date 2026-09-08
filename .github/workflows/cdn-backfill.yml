@@ -25,6 +25,7 @@ env:
 
 jobs:
   backfill:
+    if: vars.CDN_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

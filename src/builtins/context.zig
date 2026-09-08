@@ -14,6 +14,7 @@ const types = @import("../core/shared/types.zig");
 const context_contract = @import("../core/workspace/context_contract.zig");
 const context_limits = @import("../core/config/context_limits.zig");
 const prompt_policy_contract = @import("../core/config/prompt_policy.zig");
+const design_mode = @import("../core/modes/design_mode.zig");
 
 const Allocator = std.mem.Allocator;
 const BackgroundRuntime = background_runtime.BackgroundRuntime;
@@ -2849,6 +2850,9 @@ fn appendTransient(input: TransientContextInput, arena: Allocator, messages: *st
     try messages.append(arena, .{ .role = .system, .content = content });
     try appendWorkspaceAccessContext(input.access_scope, arena, messages);
     try messages.append(arena, .{ .role = .system, .content = permissionModeContext(input.permission_mode) });
+    if (std.mem.eql(u8, input.interaction_mode, design_mode.id)) {
+        try messages.append(arena, .{ .role = .system, .content = design_mode.runtime_context });
+    }
     try appendFocusedVerificationContext(input.tracker, arena, messages);
 
     const runtime_state = try input.background.snapshot(arena);
@@ -3006,6 +3010,7 @@ const PromptContextFixture = struct {
     workspace_root: []const u8 = "/tmp",
     project_context: []const u8 = "",
     permission_mode: types.PermissionMode = .ask,
+    interaction_mode: []const u8 = "ask",
     tracker: ?*change_tracker.ChangeTracker = null,
     interactive: bool = true,
 
@@ -3019,6 +3024,7 @@ const PromptContextFixture = struct {
             .workspace_root = self.workspace_root,
             .interactive = self.interactive,
             .permission_mode = self.permission_mode,
+            .interaction_mode = self.interaction_mode,
             .tracker = self.tracker,
             .background = &self.background,
             .session = &self.session,
@@ -3163,6 +3169,30 @@ test "runtime context ordering and background snapshot" {
     try std.testing.expectEqual(@as(usize, 3), starting_messages.items.len);
     try expectContains(starting_messages.items[0].content.?, "<fx-turn-context>");
     try expectContains(starting_messages.items[2].content.?, "url=pending");
+}
+
+test "design interaction mode injects design contract workflow" {
+    var rt = PromptContextFixture{ .interaction_mode = design_mode.id };
+    defer rt.deinit(std.testing.allocator);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var messages: std.ArrayList(ChatMessage) = .empty;
+    try appendTransient(rt.transientInput(), arena_state.allocator(), &messages);
+
+    var found = false;
+    for (messages.items) |message| {
+        const content = message.content orelse continue;
+        if (std.mem.find(u8, content, "interaction mode is design") == null) continue;
+        found = true;
+        try expectContains(content, "mcp_fx_design_discover");
+        try expectContains(content, "Paper is the default canvas backend");
+        try expectContains(content, "Storybook is optional");
+        try expectContains(content, "ambiguous token bindings");
+        try expectContains(content, "mcp_fx_design_verify");
+        try expectContains(content, "Layer names may change");
+    }
+    try std.testing.expect(found);
 }
 
 test "runtime context keeps live background metadata inside line fields" {

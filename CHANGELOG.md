@@ -1,8 +1,24 @@
 # fx
 
-## 0.0.7
+## 0.0.8
 
 <!-- release:start -->
+
+### New Features
+
+- **Design mode:** Capture rendered pages and prepare imports into Paper using existing source assets and styles.
+- **Visual comparisons:** Use `/diff` with a page URL and Paper node to create a fresh comparison without an import. Comparisons run in the background and open with Ctrl+D.
+- **Diff viewer:** Inspect Paper and highlighted changes with a draggable reveal slider, synchronized zoom and pan, and an optional source view.
+
+### Bug Fixes
+
+- **Stateful captures:** Reject inconsistent DOM and screenshot captures and support explicit page state and readiness checks.
+- **Import recovery:** Retain Paper operation receipts so interrupted verification can recover without repeating mutations.
+- **macOS compatibility:** Correct permission checks that prevented macOS builds.
+
+<!-- release:end -->
+
+## 0.0.7
 
 **MCP is safer, easier to manage and more compatible; project servers require explicit trust, `fx mcp` is now a top-level command, `Ctrl+Enter` can steer active turns and fx uses eight fewer tools to preserve context.**
 
@@ -60,8 +76,6 @@
 - [Notion](https://developers.notion.com/guides/mcp/overview)
 - [Exa](https://exa.ai/mcp)
 - [Hugging Face](https://huggingface.co/docs/hub/agents-mcp)
-
-<!-- release:end -->
 
 ## 0.0.6
 

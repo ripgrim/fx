@@ -54,6 +54,7 @@ pub var approval_button_inactive_style: []const u8 = "\x1b[48;5;239m\x1b[38;5;25
 pub var selected_completion_style: []const u8 = "\x1b[1;38;5;255m";
 // Statusbar permissions "auto": a step brighter than the statusline gray.
 pub var permission_auto_style: []const u8 = "\x1b[38;5;252m";
+pub var design_mode_style: []const u8 = "\x1b[1;38;5;141m";
 var active_terminal_background: ?TerminalRgb = null;
 
 var truecolor_enabled: bool = true;
@@ -84,6 +85,7 @@ pub fn initTheme(light: bool, terminal_bg: ?TerminalRgb) void {
         approval_button_inactive_style = "\x1b[48;5;251m\x1b[38;5;237m";
         selected_completion_style = "\x1b[1;38;5;235m";
         permission_auto_style = "\x1b[38;5;238m";
+        design_mode_style = "\x1b[1;38;5;91m";
     } else {
         divider_style = "\x1b[38;5;240m";
         hint_style = "\x1b[38;5;255m";
@@ -102,6 +104,7 @@ pub fn initTheme(light: bool, terminal_bg: ?TerminalRgb) void {
         approval_button_inactive_style = "\x1b[48;5;239m\x1b[38;5;255m";
         selected_completion_style = "\x1b[1;38;5;255m";
         permission_auto_style = "\x1b[38;5;252m";
+        design_mode_style = "\x1b[1;38;5;141m";
     }
 
     // The diff marker green/red reads the same on light and dark, so it is set
@@ -174,18 +177,19 @@ const dev_revision_bytes: usize = 7;
 fn writeBuildLabel(
     out: []u8,
     channel: update_target.Channel,
+    local_dev: bool,
     version_text: []const u8,
     revision: []const u8,
 ) ![]const u8 {
-    if (channel != .dev) return std.fmt.bufPrint(out, "v{s}", .{version_text});
-    if (revision.len < dev_revision_bytes or std.mem.eql(u8, revision, "unknown")) {
-        return std.fmt.bufPrint(out, "v{s} {s}[dev]{s}", .{ version_text, hint_style, dim_style });
+    if (channel != .dev and !local_dev) return std.fmt.bufPrint(out, "v{s}", .{version_text});
+    if (channel != .dev or revision.len < dev_revision_bytes or std.mem.eql(u8, revision, "unknown")) {
+        return std.fmt.bufPrint(out, "{s}[dev]{s} v{s}", .{ hint_style, dim_style, version_text });
     }
-    return std.fmt.bufPrint(out, "v{s}-{s} {s}[dev]{s}", .{
-        version_text,
-        revision[0..dev_revision_bytes],
+    return std.fmt.bufPrint(out, "{s}[dev]{s} v{s}-{s}", .{
         hint_style,
         dim_style,
+        version_text,
+        revision[0..dev_revision_bytes],
     });
 }
 
@@ -194,6 +198,7 @@ pub fn welcomeMessage(alloc: std.mem.Allocator) ![]u8 {
     const build_label = try writeBuildLabel(
         &label_buf,
         build_channel,
+        @import("builtin").mode == .Debug,
         main.version,
         build_options.git_commit,
     );
@@ -210,6 +215,7 @@ pub const StatuslineItems = struct {
     context_used: u64 = 0,
     context_total: ?u32 = null,
     session_title: ?[]const u8 = null,
+    mode_label: ?[]const u8 = null,
 };
 
 /// Cell budget for the session title segment. The title is capped at 8 words
@@ -409,7 +415,10 @@ pub fn buildHintLine(
     var model_buf: [96]u8 = undefined;
     const model_label = compactModelLabel(model, &model_buf);
     var permission_buf: [64]u8 = undefined;
-    const permission_label = permissionModeStatusLabel(permission_mode, &permission_buf);
+    const permission_label = if (statusline.mode_label) |mode_label|
+        std.fmt.bufPrint(&permission_buf, "{s}{s}{s}", .{ design_mode_style, mode_label, statusline_style }) catch mode_label
+    else
+        permissionModeStatusLabel(permission_mode, &permission_buf);
 
     var end: usize = 0;
     if (!awaiting_permission and !has_api_key) {
@@ -891,6 +900,7 @@ test "welcomeMessage keeps only the app name bright" {
     const build_label = try writeBuildLabel(
         &label_buf,
         build_channel,
+        @import("builtin").mode == .Debug,
         main.version,
         build_options.git_commit,
     );
@@ -906,19 +916,26 @@ test "welcomeMessage keeps only the app name bright" {
 
 test "build label stays bare on the stable channel" {
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .stable, "0.0.4", "abcdef123456");
+    const label = try writeBuildLabel(&buf, .stable, false, "0.0.4", "abcdef123456");
     try std.testing.expectEqualStrings("v0.0.4", label);
+}
+
+test "local development build label precedes the version without switching update channels" {
+    var buf: [welcome_build_label_bytes]u8 = undefined;
+    const label = try writeBuildLabel(&buf, .stable, true, "0.0.7", "abcdef123456");
+    try std.testing.expect(std.mem.find(u8, label, "[dev]").? < std.mem.find(u8, label, "v0.0.7").?);
+    try std.testing.expect(std.mem.find(u8, label, "abcdef") == null);
 }
 
 test "dev build label carries the commit and restores the dim run after the tag" {
     initTheme(false, null);
 
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .dev, "0.0.5", "abcdef123456");
+    const label = try writeBuildLabel(&buf, .dev, false, "0.0.5", "abcdef123456");
 
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
-        "v0.0.5-abcdef1 {s}[dev]{s}",
+        "{s}[dev]{s} v0.0.5-abcdef1",
         .{ hint_style, dim_style },
     );
     defer std.testing.allocator.free(expected);
@@ -930,11 +947,11 @@ test "dev build label drops an unresolved revision" {
     initTheme(false, null);
 
     var buf: [welcome_build_label_bytes]u8 = undefined;
-    const label = try writeBuildLabel(&buf, .dev, "0.0.5", "unknown");
+    const label = try writeBuildLabel(&buf, .dev, false, "0.0.5", "unknown");
 
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
-        "v0.0.5 {s}[dev]{s}",
+        "{s}[dev]{s} v0.0.5",
         .{ hint_style, dim_style },
     );
     defer std.testing.allocator.free(expected);
@@ -1129,6 +1146,20 @@ test "buildHintLine renders yolo uppercase with subdued permission styling" {
         std.testing.allocator,
         "{s}YOLO{s} · gpt-4o",
         .{ permission_auto_style, statusline_style },
+    );
+    defer std.testing.allocator.free(expected);
+
+    try std.testing.expectEqualStrings(expected, line);
+}
+
+test "buildHintLine renders design mode in purple" {
+    initTheme(false, null);
+    var buf: [128]u8 = undefined;
+    const line = buildHintLine(false, false, true, "openai/gpt-4o", .auto, 0, null, false, false, .auto, false, .{ .mode_label = "DESIGN" }, 80, &buf);
+    const expected = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}DESIGN{s} · gpt-4o",
+        .{ design_mode_style, statusline_style },
     );
     defer std.testing.allocator.free(expected);
 

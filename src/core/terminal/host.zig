@@ -203,7 +203,7 @@ pub const Paths = struct {
             alloc,
             builtin.os.tag,
             home,
-            std.c.getuid(),
+            currentUserId(),
         );
         var selection_owned = true;
         errdefer if (selection_owned) selection.deinit(alloc);
@@ -229,7 +229,7 @@ pub const Paths = struct {
         if (selection.uses_fallback) {
             transport_dir = try openRuntimeTransportDir(
                 selection.transport_root,
-                std.c.getuid(),
+                currentUserId(),
             );
         }
         selection_owned = false;
@@ -261,6 +261,10 @@ pub const Paths = struct {
     }
 };
 
+fn currentUserId() u32 {
+    return if (comptime builtin.os.tag == .windows) 0 else std.c.getuid();
+}
+
 fn openRuntimeTransportDir(
     transport_root: []const u8,
     uid: std.c.uid_t,
@@ -290,7 +294,7 @@ fn openVerifiedPrivateRuntimeDir(
             parent.createDir(
                 zio,
                 name,
-                std.Io.File.Permissions.fromMode(0o700),
+                io_mod.permissionsFromMode(0o700),
             ) catch |create_err| switch (create_err) {
                 error.PathAlreadyExists => {},
                 else => return create_err,
@@ -362,7 +366,7 @@ fn validatePrivateRuntimeDir(
 ) !void {
     if (stat.kind != .directory) return error.RuntimeDirectoryUnsafe;
     if (owner_uid != uid) return error.RuntimeDirectoryOwnerMismatch;
-    if (stat.permissions.toMode() & 0o777 != 0o700) {
+    if (!io_mod.permissionsMatch(stat.permissions, 0o700)) {
         return error.PrivateStatePermissionsUnsupported;
     }
 }
@@ -1429,7 +1433,7 @@ fn verifyEndpointPermissions(host_dir: *io_mod.VerifiedDir) !void {
         .{ .follow_symlinks = false },
     );
     if (stat.kind != .unix_domain_socket or
-        stat.permissions.toMode() & 0o777 != 0o600)
+        !io_mod.permissionsMatch(stat.permissions, 0o600))
     {
         return error.PrivateEndpointPermissionsUnsupported;
     }

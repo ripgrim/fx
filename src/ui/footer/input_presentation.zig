@@ -3,6 +3,7 @@ const question_prompt = @import("../../core/agent/question_prompt.zig");
 const auth_runtime = @import("../../core/auth/auth_runtime.zig");
 const credentials = @import("../../core/auth/credentials.zig");
 const image_attachments = @import("../../core/images/image_attachments.zig");
+const mcp_health = @import("../../core/mcp/health.zig");
 const mcp_menu_state = @import("../../core/mcp/menu_state.zig");
 const command_specs = @import("../../core/slash_commands/command_specs.zig");
 const display_width = @import("../../core/shared/display_width.zig");
@@ -487,6 +488,10 @@ pub fn composeHintRow(
         ""
     else if (danger_text.len > 0)
         danger_text
+    else if (ctx.design_diff_loading.len > 0)
+        ctx.design_diff_loading
+    else if (ctx.design_diff_ready and !approval_active and !ctx.auth_picker.active and !ctx.subagent_view_active)
+        "Diff ready · ctrl+d to open"
     else
         ctx.upgrade_status;
     const right_width = display_width.visibleWidth(right_text);
@@ -556,7 +561,7 @@ pub fn composeMcpMenuHintRow(
     alloc: Allocator,
     width: u16,
     ctrl_c_pending: bool,
-    state: mcp_menu_state.State,
+    projection: render_input.McpMenuProjection,
 ) !std.ArrayList(u8) {
     if (ctrl_c_pending) {
         var warning: std.ArrayList(u8) = .empty;
@@ -592,10 +597,15 @@ pub fn composeMcpMenuHintRow(
         "Type  Enter Next  Tab Complete  Esc",
         "Enter Tab Esc",
     };
-    const details_variants = [_][]const u8{
+    const authentication_details_variants = [_][]const u8{
         "Enter Authenticate     A Approve     X Reject     D Remove     L Logout     Esc Back",
         "Enter Action  A Approve  X Reject  D Remove  L Logout  Esc",
         "Enter A X D L Esc",
+    };
+    const details_variants = [_][]const u8{
+        "A Approve     X Reject     D Remove     L Logout     Esc Back",
+        "A Approve  X Reject  D Remove  L Logout  Esc",
+        "A X D L Esc",
     };
     const confirm_variants = [_][]const u8{
         "Enter Confirm     Esc Cancel",
@@ -607,13 +617,19 @@ pub fn composeMcpMenuHintRow(
         "Esc",
         "Esc",
     };
-    const variants = switch (state.screen) {
-        .browse => if (state.section == .servers) root_variants else catalog_variants,
+    const variants = switch (projection.state.screen) {
+        .browse => if (projection.state.section == .servers) root_variants else catalog_variants,
         .preview => preview_variants,
         .add => add_variants,
         .arguments => argument_variants,
         .info => info_variants,
-        .details => details_variants,
+        .details => if (projection.selectedServer()) |server|
+            if (server.authentication == .required)
+                authentication_details_variants
+            else
+                details_variants
+        else
+            details_variants,
         .confirm => confirm_variants,
     };
     var hint = variants[variants.len - 1];
@@ -630,6 +646,54 @@ pub fn composeMcpMenuHintRow(
     try row_text.appendClipped(alloc, &row, hint, width);
     try row.appendSlice(alloc, ui_render.reset_style);
     return row;
+}
+
+test "MCP details hint only offers authentication when required" {
+    var servers = [_]mcp_health.ServerSnapshot{.{
+        .configured_name = @constCast("paper"),
+        .negotiated_name = null,
+        .negotiated_version = null,
+        .source = .profile,
+        .scope = .profile,
+        .required = false,
+        .transport = .http,
+        .protocol_version = null,
+        .connection = .ready,
+        .authentication = .required,
+        .counts = .{},
+        .cache_freshness = .fresh,
+        .subscription = .unsupported,
+        .runtime_generation = 1,
+        .catalog_generation = 1,
+        .retry_attempt = 0,
+        .retry_in_ms = null,
+        .last_successful_discovery_ms = null,
+        .failure = null,
+    }};
+    const projection: render_input.McpMenuProjection = .{
+        .state = .{ .active = true, .load_state = .ready, .screen = .details },
+        .servers = &servers,
+    };
+
+    var authentication_hint = try composeMcpMenuHintRow(
+        std.testing.allocator,
+        100,
+        false,
+        projection,
+    );
+    defer authentication_hint.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, authentication_hint.items, "Enter Authenticate") != null);
+
+    servers[0].authentication = .none;
+    var ordinary_hint = try composeMcpMenuHintRow(
+        std.testing.allocator,
+        100,
+        false,
+        projection,
+    );
+    defer ordinary_hint.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, ordinary_hint.items, "Enter Authenticate") == null);
+    try std.testing.expect(std.mem.find(u8, ordinary_hint.items, "D Remove") != null);
 }
 
 pub fn composeHelpMenuHintRow(alloc: Allocator, width: u16, ctrl_c_pending: bool) !std.ArrayList(u8) {
@@ -1817,6 +1881,26 @@ test "compose hint row right-aligns upgrade status after styled auto mode" {
     try std.testing.expect(std.mem.find(u8, row.items, "update ready: ctrl+g to reload") != null);
     try std.testing.expect(std.mem.find(u8, row.items, "\x1b[27G") != null);
     try std.testing.expect(display_width.visibleWidthIgnoringAnsi(row.items) <= 56);
+}
+
+test "design diff shortcut hint appears beside model only when ready" {
+    var input = InputRuntime{};
+    defer input.deinit(std.testing.allocator);
+    var ctx = testRenderContext(&input);
+    ctx.design_diff_ready = true;
+    var ready = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer ready.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, ready.items, "Diff ready · ctrl+d to open") != null);
+    ctx.design_diff_loading = "| Comparing";
+    var loading = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer loading.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, loading.items, "| Comparing") != null);
+    try std.testing.expect(std.mem.find(u8, loading.items, "Diff ready") == null);
+    ctx.design_diff_loading = "";
+    ctx.design_diff_ready = false;
+    var pending = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer pending.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, pending.items, "Diff ready") == null);
 }
 
 test "compose hint row prioritizes red yolo warning with compact fallback" {

@@ -33,6 +33,7 @@ const worker_runtime = @import("../agent/worker_runtime.zig");
 const context_limits = @import("../config/context_limits.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const current_branch = @import("../workspace/current_branch.zig");
+const design_mode = @import("../modes/design_mode.zig");
 
 const Allocator = std.mem.Allocator;
 const ToolCall = types.ToolCall;
@@ -67,6 +68,7 @@ pub const SessionPermissionStateProvider = struct {
 /// owns, persists, or extends any referenced runtime state.
 pub const Input = struct {
     workspace_root: []const u8,
+    interaction_mode: []const u8 = "",
     access_scope: ?workspace_access.AccessScope = null,
     permission_review_turn: ?permission_auto_classifier.ReviewTurnContext = null,
     permission_grants: []const PermissionGrant,
@@ -1098,6 +1100,12 @@ fn resolveOrdinaryPermissionOutcome(
         return ordinaryPermissionOutcome(.once);
     }
     if (!command_call and !toolRequiresApproval(input, call.name) and !is_dynamic_tool) {
+        return ordinaryPermissionOutcome(.once);
+    }
+    if (is_dynamic_tool and design_mode.authorizesCanvasTool(input.interaction_mode, call.name)) {
+        return ordinaryPermissionOutcome(.once);
+    }
+    if (is_dynamic_tool and try dynamicToolReadsOnly(input, arena, call.name)) {
         return ordinaryPermissionOutcome(.once);
     }
 
@@ -2461,6 +2469,12 @@ fn isAvailableDynamicTool(input: Input, name: []const u8) bool {
     }, name);
 }
 
+fn dynamicToolReadsOnly(input: Input, arena: Allocator, name: []const u8) !bool {
+    const context = input.mcp_runtime.context orelse return false;
+    const tool_read_only = input.mcp_runtime.tool_read_only orelse return false;
+    return tool_read_only(context, arena, name, input.mcp_runtime.access);
+}
+
 test "permission target resolution reports a missing home" {
     const failure = (try permissionTargetResolutionFailureMessage(
         std.testing.allocator,
@@ -2870,6 +2884,87 @@ test "dynamic MCP admission checks built-in and advertised names before runtime 
     try std.testing.expectEqual(@as(usize, 0), mcp.calls);
     try std.testing.expect(isAvailableDynamicTool(input, "mcp_example"));
     try std.testing.expectEqual(@as(usize, 1), mcp.calls);
+}
+
+test "Paper MCP admission honors annotations and Design mode authority" {
+    const Mcp = struct {
+        fn hasTool(_: *anyopaque, _: []const u8, _: tool_mcp_runtime.Access) bool {
+            return true;
+        }
+
+        fn toolReadOnly(
+            _: *anyopaque,
+            _: Allocator,
+            name: []const u8,
+            _: tool_mcp_runtime.Access,
+        ) anyerror!bool {
+            return std.mem.eql(u8, name, "mcp_paper_get_guide");
+        }
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var background: BackgroundRuntime = .{};
+    defer background.deinit(std.testing.allocator);
+    var marker: u8 = 0;
+    const advertised = [_][]const u8{
+        "mcp_paper_get_guide",
+        "mcp_paper_write_html",
+    };
+    var input = testInputWithClassifier(
+        &worker,
+        &background,
+        permission_auto_classifier.Classifier.disabled(),
+    );
+    input.advertised_dynamic_tool_names = &advertised;
+    input.mcp_runtime = .{
+        .context = @ptrCast(&marker),
+        .has_tool = Mcp.hasTool,
+        .tool_read_only = Mcp.toolReadOnly,
+    };
+
+    const guide = try requestPermissionOutcome(
+        input,
+        arena_state.allocator(),
+        .{
+            .id = "guide",
+            .name = "mcp_paper_get_guide",
+            .arguments_json = "{\"topic\":\"paper-mcp-instructions\"}",
+        },
+        .auto,
+        &.{},
+    );
+    try std.testing.expectEqual(ToolPermissionDecision.once, guide.decision);
+
+    const write = try requestPermissionOutcome(
+        input,
+        arena_state.allocator(),
+        .{
+            .id = "write",
+            .name = "mcp_paper_write_html",
+            .arguments_json = "{}",
+        },
+        .auto,
+        &.{},
+    );
+    try std.testing.expect(write.decision.isDenied());
+    try std.testing.expectEqual(types.ToolPermissionDenialReason.review_unavailable, write.denial_reason.?);
+
+    input.interaction_mode = design_mode.id;
+    const design_write = try requestPermissionOutcome(
+        input,
+        arena_state.allocator(),
+        .{
+            .id = "design-write",
+            .name = "mcp_paper_write_html",
+            .arguments_json = "{}",
+        },
+        .auto,
+        &.{},
+    );
+    try std.testing.expectEqual(ToolPermissionDecision.once, design_write.decision);
 }
 
 test "interactive dynamic MCP approval projects bounded terminal-safe arguments only" {

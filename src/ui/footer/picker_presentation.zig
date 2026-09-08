@@ -490,7 +490,7 @@ fn composeSignInPickerRow(
             try row_text.appendClipped(
                 alloc,
                 &row,
-                if (source == .chatgpt_subscription) "Authorize with Codex" else "Authorize with Grok",
+                authorizationUrlLabel(snapshot.verification_uri),
                 remaining,
             );
             try row.appendSlice(alloc, "\x1b[24m\x1b]8;;\x1b\\");
@@ -588,6 +588,13 @@ fn composeSignInPickerRow(
     try row_text.appendClipped(alloc, &row, label, width);
     try row.appendSlice(alloc, ui_render.reset_style);
     return row;
+}
+
+fn authorizationUrlLabel(url: []const u8) []const u8 {
+    var end = url.len;
+    if (std.mem.findScalar(u8, url, '?')) |index| end = @min(end, index);
+    if (std.mem.findScalar(u8, url, '#')) |index| end = @min(end, index);
+    return url[0..end];
 }
 
 fn composeApiKeyPickerRow(
@@ -2460,7 +2467,7 @@ test "Codex sign-in stage renders a bounded clickable authorization action" {
     var row = try composeAuthPickerRow(alloc, view, 2, authPickerRowCount(view), 40);
     defer row.deinit(alloc);
     try std.testing.expect(std.mem.find(u8, row.items, "  Open   ") != null);
-    try std.testing.expect(std.mem.find(u8, row.items, "Authorize with Codex") != null);
+    try std.testing.expect(std.mem.find(u8, row.items, "https://auth.openai.test/") != null);
     try std.testing.expect(std.mem.find(u8, row.items, "\x1b]8;") != null);
     try std.testing.expect(std.mem.find(u8, row.items, url) != null);
     try std.testing.expect(std.mem.find(u8, row.items, "\x1b]8;;\x1b\\") != null);
@@ -2521,7 +2528,7 @@ test "Codex sign-in projects the compact aligned footer through the VT emulator"
     try std.testing.expectEqualStrings("", row.items);
     row.clearRetainingCapacity();
     try grid.rowTextTrimmed(3, &row);
-    try std.testing.expectEqualStrings("  Open   Authorize with Codex", row.items);
+    try std.testing.expectEqualStrings("  Open   https://issuer.test/oauth/authorize", row.items);
     row.clearRetainingCapacity();
     try grid.rowTextTrimmed(4, &row);
     try std.testing.expectEqualStrings("", row.items);
@@ -2558,7 +2565,7 @@ test "Grok sign-in starts with the collapsed browser flow in the VT emulator" {
     const expected_rows = [_][]const u8{
         "Sign in with Grok                                     Waiting for authorization…",
         "",
-        "  Open   Authorize with Grok",
+        "  Open   https://auth.x.ai/oauth2/authorize",
         "  Browser didn't return? Press Tab to enter a code",
         "",
     };
@@ -2601,7 +2608,7 @@ test "Grok manual fallback projects the approved expanded layout through the VT 
     const expected_rows = [_][]const u8{
         "Sign in with Grok                                     Waiting for authorization…",
         "",
-        "  Open   Authorize with Grok",
+        "  Open   https://auth.x.ai/oauth2/authorize",
         "",
         "  Paste the code shown by xAI",
         "  ┃ Paste or type the code",
@@ -2622,10 +2629,9 @@ test "compact subscription browser sign-in prioritizes the authorization action"
     const alloc = std.testing.allocator;
     const cases = [_]struct {
         source: credentials.Source,
-        label: []const u8,
     }{
-        .{ .source = .chatgpt_subscription, .label = "Authorize with Codex" },
-        .{ .source = .grok_subscription, .label = "Authorize with Grok" },
+        .{ .source = .chatgpt_subscription },
+        .{ .source = .grok_subscription },
     };
 
     for (cases) |case| {
@@ -2646,7 +2652,7 @@ test "compact subscription browser sign-in prioritizes the authorization action"
 
         var row = try composeAuthPickerRow(alloc, view, 0, 1, 80);
         defer row.deinit(alloc);
-        try std.testing.expect(std.mem.find(u8, row.items, case.label) != null);
+        try std.testing.expect(std.mem.find(u8, row.items, "https://issuer.test/authorize") != null);
     }
 }
 

@@ -40,7 +40,7 @@ describe.skipIf(SKIP)("tui: startup and exit", () => {
       session = await TmuxSession.create();
       await session.waitForComposer(10_000);
       await session.sendText("/help");
-      const pane = await session.waitForText("Commands 36", 5_000);
+      const pane = await session.waitForText("Commands 37", 5_000);
       expect(pane).toContain("[All]");
       expect(pane).toContain("Tab Category");
       expect(pane).toContain("Enter Open");
@@ -247,7 +247,10 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
       writeFileSync(stderrPath, "");
 
       const version = execFileSync(FX_BIN, ["--version"], { encoding: "utf8" }).trim();
-      const banner = `𝒇x v${version} · Run /help for commands`;
+      const banners = [
+        `𝒇x v${version} · Run /help for commands`,
+        `𝒇x [dev] v${version} · Run /help for commands`,
+      ];
 
       try {
         session = await TmuxSession.create({
@@ -261,7 +264,11 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
           height: 40,
         });
 
-        const initial = await session.waitForText(banner, 10_000);
+        const initial = await session.waitForPane(
+          (pane) => banners.some((banner) => pane.includes(banner)),
+          10_000,
+        );
+        const banner = banners.find((candidate) => initial.includes(candidate))!;
         expect(initial.split(banner)).toHaveLength(2);
 
         for (const command of ["/clear", "/reset", "/new"]) {

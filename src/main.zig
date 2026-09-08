@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
 
-pub const version = "0.0.7";
+pub const version = "0.0.8";
 
 const app_lifecycle = @import("core/app/app_lifecycle.zig");
 const provider_runtime = @import("core/app/provider_runtime.zig");
@@ -78,6 +78,7 @@ const mcp_runtime_mod = @import("core/mcp/mcp_runtime.zig");
 const mcp_model_catalog = @import("core/mcp/model_catalog.zig");
 const mcp_access_policy = @import("core/mcp/access_policy.zig");
 const mcp_menu_state = @import("core/mcp/menu_state.zig");
+const design_mode = @import("core/modes/design_mode.zig");
 const app_mcp_runtime = @import("core/app/app_mcp_runtime.zig");
 const app_mcp_menu_runtime = @import("core/app/app_mcp_menu_runtime.zig");
 const skill_commands = @import("core/skills/skill_commands.zig");
@@ -114,6 +115,7 @@ const app_terminal_takeover_runtime = @import("core/app/app_terminal_takeover_ru
 const terminal_host = @import("core/terminal/host.zig");
 const terminal_native_session = @import("core/terminal/native_session.zig");
 const terminal_tmux_session = @import("core/terminal/tmux_session.zig");
+const claude_tool_bridge = @import("gateway/claude_tool_bridge.zig");
 const session_runtime = @import("core/session/session.zig");
 const session_codec = @import("core/session/session_codec.zig");
 const session_child_store = @import("core/session/session_child_store.zig");
@@ -583,6 +585,7 @@ const App = struct {
     subagents: ui_subagents.Controller = .{},
     change_tracker: change_tracker_mod.ChangeTracker = .{},
     mcp: app_mcp_runtime.State = .{},
+    design_diff: @import("core/design/diff_command.zig").State = .{},
     skills: skill_runtime.Runtime = .{},
     context_snapshot: context_contract.GatheredContextSnapshot = .{},
     file_index: file_index_mod.FileIndex = .{},
@@ -717,6 +720,10 @@ const App = struct {
         HostConfigAppRuntime.persistPermissionMode(self, mode);
     }
 
+    pub fn persistAcceptedInteractionMode(self: *App, mode_id: []const u8) !void {
+        HostConfigAppRuntime.persistModeId(self, mode_id);
+    }
+
     pub fn configureNotifications(self: *App) !void {
         // Register herdr hooks before NotificationAppRuntime.configure freezes
         // the lifecycle runtime (its call to freeze() is the sole freeze site).
@@ -831,6 +838,7 @@ const App = struct {
 
     /// Returns an owned handoff only after all interactive state is torn down.
     pub fn deinitWithResumeHandoff(self: *App) ?app_session_runtime.ResumeHandoff {
+        self.design_diff.deinit();
         return self.deinitImpl(true);
     }
 
@@ -1567,6 +1575,10 @@ const App = struct {
         );
     }
 
+    pub fn ensureDesignModeMcp(self: *App) !design_mode.McpSetupOutcome {
+        return app_mcp_menu_runtime.Runtime(App).ensureDesignModeBackend(self);
+    }
+
     pub fn beginMcpMenuReload(self: *App, generation: u64) !void {
         return self.mcp.beginMenuReload(
             self.alloc,
@@ -1746,6 +1758,15 @@ const App = struct {
 
     pub fn hasMcpTool(self: *App, name: []const u8, access: tool_mcp_runtime.Access) bool {
         return self.mcp.hasTool(name, access);
+    }
+
+    pub fn mcpToolReadOnly(
+        self: *App,
+        arena: Allocator,
+        name: []const u8,
+        access: tool_mcp_runtime.Access,
+    ) !bool {
+        return self.mcp.toolReadOnly(arena, name, access);
     }
 
     pub fn validateMcpTool(
@@ -3284,6 +3305,21 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
     const raw_args = rawArgs(c_argc, c_argv);
     const raw_env: RawEnviron = @ptrCast(c_envp);
 
+    // Claude Code spawns fx in this mode to discover fx's tools over MCP. It
+    // must run before normal CLI parsing: the marker is not a user command.
+    if (claude_tool_bridge.isBridgeModeRaw(raw_args)) {
+        io_mod.setRawEnviron(raw_env);
+        const process_args = argsFromRaw(raw_args);
+        var threaded = std.Io.Threaded.init(processAllocator(), .{
+            .argv0 = .init(process_args),
+            .environ = .{ .block = environBlockFromRaw(raw_env) },
+        });
+        defer threaded.deinit();
+        io_mod.setIo(threaded.io());
+        try claude_tool_bridge.run(processAllocator(), raw_args);
+        return;
+    }
+
     if (comptime terminal_host.isSupported()) {
         if (terminal_tmux_session.isCaptureModeRaw(raw_args)) {
             io_mod.setRawEnviron(raw_env);
@@ -3427,23 +3463,27 @@ fn runNonBenchmark(raw_args: []const [*:0]const u8, raw_env: RawEnviron, cli_arg
     const before = try app_entry_runtime.runBeforeInteractive(alloc, cli_args, cfg);
     switch (before) {
         .interactive => |launch| {
-            const env_block = environBlockFromRaw(raw_env);
-            const process_args = argsFromRaw(raw_args);
-            var threaded = std.Io.Threaded.init(alloc, .{
-                .argv0 = .init(process_args),
-                .environ = .{ .block = env_block },
-            });
-            defer threaded.deinit();
-            io_mod.setIo(threaded.io());
-
             var owned_launch = launch;
             defer owned_launch.deinit(alloc);
-            defer debug_trace.shutdown();
+            if (comptime builtin.os.tag == .windows) {
+                try writeStderrFast("Interactive mode is not supported on Windows yet. Use `fx ask` or `fx acp`.\n");
+                return error.InteractiveModeUnsupported;
+            } else {
+                const env_block = environBlockFromRaw(raw_env);
+                const process_args = argsFromRaw(raw_args);
+                var threaded = std.Io.Threaded.init(alloc, .{
+                    .argv0 = .init(process_args),
+                    .environ = .{ .block = env_block },
+                });
+                defer threaded.deinit();
+                io_mod.setIo(threaded.io());
+                defer debug_trace.shutdown();
 
-            const outcome = try app_entry_runtime.runInteractive(App, alloc, &owned_launch);
-            switch (outcome) {
-                .returned => return,
-                .exit => |code| std.process.exit(code),
+                const outcome = try app_entry_runtime.runInteractive(App, alloc, &owned_launch);
+                switch (outcome) {
+                    .returned => return,
+                    .exit => |code| std.process.exit(code),
+                }
             }
         },
         .returned => exitFast(0),
@@ -3458,13 +3498,21 @@ fn rawArgs(c_argc: c_int, c_argv: [*][*:0]c_char) []const [*:0]const u8 {
 }
 
 fn argsFromRaw(raw_args: []const [*:0]const u8) std.process.Args {
-    return .{ .vector = raw_args };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .vector = std.os.windows.peb().ProcessParameters.CommandLine.slice() };
+    } else {
+        return .{ .vector = raw_args };
+    }
 }
 
 fn environBlockFromRaw(raw_env: RawEnviron) std.process.Environ.Block {
-    var count: usize = 0;
-    while (raw_env[count] != null) : (count += 1) {}
-    return .{ .slice = raw_env[0..count :null] };
+    if (comptime builtin.os.tag == .windows) {
+        return .global;
+    } else {
+        var count: usize = 0;
+        while (raw_env[count] != null) : (count += 1) {}
+        return .{ .slice = raw_env[0..count :null] };
+    }
 }
 
 fn shouldRunBenchmarkNoArgRaw(raw_args: []const [*:0]const u8, raw_env: RawEnviron) bool {
@@ -4282,6 +4330,7 @@ test "semantic code block preserves indentation on wrapped continuation rows" {
 
 test {
     _ = @import("napi_fetch_state.zig");
+    _ = @import("core/modes/design_mode.zig");
     _ = @import("core/config/model_provider.zig");
     _ = provider_runtime;
     _ = @import("acp/prompt.zig");

@@ -1,13 +1,18 @@
 name: Full CI
 
 on:
+  pull_request:
   workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: Run Linux ARM64 and both macOS architectures too
+        type: boolean
+        default: false
   push:
-    branches-ignore:
-      - main
+    branches: [main]
 
 concurrency:
-  group: full-ci-${{ github.ref }}
+  group: full-ci-${{ github.head_ref || github.ref_name }}-${{ inputs.all_platforms == true && 'all' || 'linux' }}
   cancel-in-progress: true
 
 permissions:
@@ -15,6 +20,66 @@ permissions:
   contents: read
 
 jobs:
+  release-contract:
+    name: Fork release gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 -m unittest discover -s scripts -p fork_release_gate_test.py
+
+  build:
+    name: Build (${{ matrix.optimize }}, ${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.all_platforms == true && '[{"name":"linux-x86_64","runner":"ubuntu-24.04"},{"name":"linux-aarch64","runner":"ubuntu-24.04-arm"},{"name":"macos-x86_64","runner":"macos-15-intel"},{"name":"macos-aarch64","runner":"macos-15"}]' || '[{"name":"linux-x86_64","runner":"ubuntu-24.04"}]') }}
+        optimize: [ReleaseSafe]
+    env:
+      AI_GATEWAY_API_KEY: ""
+      VERCEL_OIDC_TOKEN: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+          cache-key: full-ci-build-${{ matrix.platform.name }}-${{ matrix.optimize }}
+
+      - name: Build
+        run: zig build -Doptimize=${{ matrix.optimize }}
+
+      - name: Smoke test fresh binary
+        shell: bash
+        run: |
+          help_stdout="$(mktemp)"
+          help_stderr="$(mktemp)"
+          status_stdout="$(mktemp)"
+          status_stderr="$(mktemp)"
+          trap 'rm -f "$help_stdout" "$help_stderr" "$status_stdout" "$status_stderr"' EXIT
+
+          ./zig-out/bin/fx help >"$help_stdout" 2>"$help_stderr"
+          test -s "$help_stdout"
+          test ! -s "$help_stderr"
+
+          ./zig-out/bin/fx status --json >"$status_stdout" 2>"$status_stderr"
+          test -s "$status_stdout"
+          test ! -s "$status_stderr"
+
+      - name: Package tested binary
+        shell: bash
+        run: tar -cf "$RUNNER_TEMP/fx-ci.tar" -C zig-out/bin fx
+
+      - name: Upload tested binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fx-ci-${{ matrix.platform.name }}-${{ matrix.optimize }}-${{ github.sha }}
+          path: ${{ runner.temp }}/fx-ci.tar
+          if-no-files-found: error
+          retention-days: 1
+
   native:
     name: Native checks (${{ matrix.optimize }}, ${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
@@ -22,15 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - name: linux-x86_64
-            runner: ubuntu-24.04
-          - name: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - name: macos-x86_64
-            runner: macos-15-intel
-          - name: macos-aarch64
-            runner: macos-15
+        platform: ${{ fromJSON(inputs.all_platforms == true && '[{"name":"linux-x86_64","runner":"ubuntu-24.04"},{"name":"linux-aarch64","runner":"ubuntu-24.04-arm"},{"name":"macos-x86_64","runner":"macos-15-intel"},{"name":"macos-aarch64","runner":"macos-15"}]' || '[{"name":"linux-x86_64","runner":"ubuntu-24.04"}]') }}
         optimize: [ReleaseSafe]
     env:
       AI_GATEWAY_API_KEY: ""
@@ -50,49 +107,18 @@ jobs:
       - name: Audit public surface
         run: ./scripts/check-public-surface.sh
 
-      - name: Build
-        run: zig build -Doptimize=${{ matrix.optimize }}
-
       - name: Run unit tests
         run: zig build test -Doptimize=${{ matrix.optimize }}
 
-      - name: Smoke test fresh binary
-        shell: bash
-        run: |
-          help_stdout="$(mktemp)"
-          help_stderr="$(mktemp)"
-          status_stdout="$(mktemp)"
-          status_stderr="$(mktemp)"
-          trap 'rm -f "$help_stdout" "$help_stderr" "$status_stdout" "$status_stderr"' EXIT
-
-          ./zig-out/bin/fx help >"$help_stdout" 2>"$help_stderr"
-          test -s "$help_stdout"
-          test ! -s "$help_stderr"
-
-          ./zig-out/bin/fx status --json >"$status_stdout" 2>"$status_stderr"
-          test -s "$status_stdout"
-          test ! -s "$status_stderr"
-
   e2e:
+    needs: build
     name: E2E (${{ matrix.optimize }}, ${{ matrix.platform.name }}, shard ${{ matrix.shard.label }})
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - name: linux-x86_64
-            runner: ubuntu-24.04
-            zig_tarball: zig-x86_64-linux
-          - name: linux-aarch64
-            runner: ubuntu-24.04-arm
-            zig_tarball: zig-aarch64-linux
-          - name: macos-x86_64
-            runner: macos-15-intel
-            zig_tarball: zig-x86_64-macos
-          - name: macos-aarch64
-            runner: macos-15
-            zig_tarball: zig-aarch64-macos
+        platform: ${{ fromJSON(inputs.all_platforms == true && '[{"name":"linux-x86_64","runner":"ubuntu-24.04","zig_tarball":"zig-x86_64-linux"},{"name":"linux-aarch64","runner":"ubuntu-24.04-arm","zig_tarball":"zig-aarch64-linux"},{"name":"macos-x86_64","runner":"macos-15-intel","zig_tarball":"zig-x86_64-macos"},{"name":"macos-aarch64","runner":"macos-15","zig_tarball":"zig-aarch64-macos"}]' || '[{"name":"linux-x86_64","runner":"ubuntu-24.04","zig_tarball":"zig-x86_64-linux"}]') }}
         optimize: [ReleaseSafe]
         shard:
           - index: 0
@@ -124,16 +150,18 @@ jobs:
           version: "0.16.0"
           use-cache: false
 
-      - name: Restore native Zig cache
-        uses: actions/cache/restore@v4
+      - name: Download tested binary
+        uses: actions/download-artifact@v4
         with:
-          path: .zig-cache
-          key: full-ci-e2e-read-only-${{ matrix.platform.name }}-${{ matrix.optimize }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            setup-zig-cache-v2-native-${{ matrix.platform.zig_tarball }}-0.16.0-full-ci-native-${{ matrix.platform.name }}-${{ matrix.optimize }}-
+          name: fx-ci-${{ matrix.platform.name }}-${{ matrix.optimize }}-${{ github.sha }}
+          path: ${{ runner.temp }}/fx-ci
 
-      - name: Build
-        run: zig build -Doptimize=${{ matrix.optimize }}
+      - name: Restore tested binary
+        shell: bash
+        run: |
+          mkdir -p zig-out/bin
+          tar -xf "$RUNNER_TEMP/fx-ci/fx-ci.tar" -C zig-out/bin
+          test -x zig-out/bin/fx
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -212,22 +240,31 @@ jobs:
           for test_file in "${selected[@]}"; do
             tmux_tmp_dir="$RUNNER_TEMP/fx-e2e-tmux-${SHARD_INDEX}-${test_number}"
             mkdir -p "$tmux_tmp_dir"
-            if ! TMUX_TMPDIR="$tmux_tmp_dir" bun test --max-concurrency 1 "./$test_file"; then
-              printf 'Retrying failed E2E file after resetting tmux: %s\n' "$test_file"
-              TMUX_TMPDIR="$tmux_tmp_dir" tmux kill-server 2>/dev/null || true
-              if ! TMUX_TMPDIR="$tmux_tmp_dir" bun test --max-concurrency 1 "./$test_file"; then
-                shard_status=1
-              fi
+            started=$SECONDS
+            file_status=0
+            if ! TMUX_TMPDIR="$tmux_tmp_dir" bun test --max-concurrency 1 --retry 1 "./$test_file"; then
+              shard_status=1
+              file_status=1
             fi
+            printf '%s\t%s\t%s\n' "$test_file" "$((SECONDS - started))" "$file_status" >> "$RUNNER_TEMP/e2e-timings.tsv"
             TMUX_TMPDIR="$tmux_tmp_dir" tmux kill-server 2>/dev/null || true
             test_number=$((test_number + 1))
           done
           exit "$shard_status"
 
+      - name: Upload shard timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-timings-${{ matrix.platform.name }}-${{ matrix.shard.index }}
+          path: ${{ runner.temp }}/e2e-timings.tsv
+          retention-days: 7
+
   full-suite:
     name: Full suite (${{ matrix.name }})
     if: ${{ always() }}
     needs:
+      - build
       - native
       - e2e
     runs-on: ubuntu-24.04
@@ -235,11 +272,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - linux-x86_64
-          - linux-aarch64
-          - macos-x86_64
-          - macos-aarch64
+        name: ${{ fromJSON(inputs.all_platforms == true && '["linux-x86_64","linux-aarch64","macos-x86_64","macos-aarch64"]' || '["linux-x86_64"]') }}
     steps:
       - name: Verify native and E2E matrices
         env:
@@ -249,6 +282,7 @@ jobs:
           jobs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100")"
           jq -e --arg target "$TARGET" '
             ([
+              "Build (ReleaseSafe, " + $target + ")",
               "Native checks (ReleaseSafe, " + $target + ")",
               (range(1; 5) as $shard
                 | "E2E (ReleaseSafe, " + $target + ", shard " + ($shard | tostring) + "/4)")
@@ -257,6 +291,7 @@ jobs:
             [
               .jobs[]
               | select(
+                  (.name == ("Build (ReleaseSafe, " + $target + ")")) or
                   (.name == ("Native checks (ReleaseSafe, " + $target + ")")) or
                   (.name | startswith("E2E (ReleaseSafe, " + $target + ", shard "))
               )

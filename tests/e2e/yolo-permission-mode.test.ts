@@ -296,6 +296,8 @@ describe.skipIf(!tmuxAvailable())("yolo interactive mode", () => {
       });
 
       await session.sendKeys("BTab");
+      await session.waitForText("DESIGN ·", TIMEOUT);
+      await session.sendKeys("BTab");
       await session.waitForText("ask ·", TIMEOUT);
       await session.sendText("/status");
       const statusPane = await session.waitForText("agent_step_limit=", TIMEOUT);
@@ -443,6 +445,8 @@ describe.skipIf(!tmuxAvailable())("yolo interactive mode", () => {
       await waitForGatewayRequestCount(fake, 1);
       await session.sendKeys("BTab");
       await session.waitForText("YOLO ·", TIMEOUT);
+      await session.sendKeys("BTab");
+      await session.waitForText("DESIGN ·", TIMEOUT);
       await session.sendKeys("BTab");
       await session.waitForText("ask ·", TIMEOUT);
       releaseToolCall?.();

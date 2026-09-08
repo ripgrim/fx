@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
+  symlinkSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { runFx } from "../evals/eval-helpers";
 import { contentText } from "./conditional-guidance-oracle";
@@ -23,6 +25,256 @@ import {
 } from "./tmux-helpers";
 
 const MODEL = "openai/gpt-5";
+
+test.skipIf(!tmuxAvailable())("design requests receive visual diff guidance for code components", async () => {
+  const root = createRoot("diff-guidance", LEGACY_FIXTURE);
+  gateway = startFakeGateway([fakeGatewayFinalText("Guidance received.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) {
+    await tui.sendKeys("BTab");
+    await Bun.sleep(300);
+  }
+  await tui.waitForText("DESIGN");
+  await tui.sendText("diff the Node IDs: 2ND-0 and the button component");
+  await tui.waitForText("Guidance received.", 30000);
+  const prompt = gateway.requests[0].body;
+  expect(prompt).toContain("mcp_fx_design_diff");
+  expect(prompt).toContain("not a written style audit");
+  expect(prompt).toContain("existing stories or rendered examples");
+  expect(prompt).toContain("No previous import is required");
+  expect(prompt).toContain("status ready and a viewer URL");
+  expect(prompt).toContain("never supply it yourself");
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+}, 45000);
+
+test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("diff command captures an explicit URL without an import or AI turn", async () => {
+  const root = createRoot("diff-direct", LEGACY_FIXTURE);
+  const browserCache = join(homedir(), ".agent-browser", "browsers");
+  if (existsSync(browserCache)) {
+    mkdirSync(join(root.home, ".agent-browser"), { recursive: true });
+    symlinkSync(browserCache, join(root.home, ".agent-browser", "browsers"), "dir");
+  }
+  const calls: string[] = [];
+  const paper = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    const rpc = await request.json();
+    if (!rpc.id) return new Response(null, { status: 204 });
+    let result: any = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "paper-fixture", version: "1" } };
+    if (rpc.method === "tools/call") {
+      calls.push(rpc.params.name);
+      result = rpc.params.name === "get_screenshot" ? { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1cAAAAASUVORK5CYII=" }] } : { content: [{ type: "text", text: JSON.stringify(rpc.params.name === "get_basic_info" ? { url: "https://app.paper.design/file/file/page" } : {}) }] };
+    }
+    return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+  } });
+  const page = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response('<main>Fresh page</main>', { headers: { "Content-Type": "text/html" } }) });
+  const helper = join(import.meta.dir, "../../src/core/design/helper.ts");
+  writeFileSync(join(root.home, ".fx", "mcp.json"), JSON.stringify({ mcp: { fx_design: { type: "local", command: [process.execPath, "run", helper], environment: { WSL_DISTRO_NAME: "", FX_DESIGN_PAPER_URL: `http://127.0.0.1:${paper.port}` } } } }));
+  gateway = startFakeGateway([], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  try {
+    tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+    await tui.waitForComposer();
+    await tui.sendText(`/diff node:board http://127.0.0.1:${page.port} --selector main --width 100 --height 100`);
+    await tui.waitForText("Open viewer", 60000);
+    expect(gateway.requests).toHaveLength(0);
+    expect(calls).toContain("get_screenshot");
+    expect(calls.every(name => name.startsWith("get_"))).toBe(true);
+    await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+    expect(await tui.waitForSessionEnd()).toBe(true);
+    expect(tui.paneStatus().status).toBe(0);
+    expect(readFileSync(stderrPath, "utf8")).toBe("");
+  } finally { page.stop(true); paper.stop(true); }
+}, 75000);
+
+test.skipIf(!tmuxAvailable())("diff command upgrades an already connected older managed helper", async () => {
+  const root = createRoot("diff-managed", LEGACY_FIXTURE);
+  const helperDirectory = join(root.home, ".fx", "helpers", "design");
+  mkdirSync(helperDirectory, { recursive: true });
+  const launcher = join(helperDirectory, "v1.ts");
+  writeFileSync(launcher, `import ${JSON.stringify(LEGACY_FIXTURE)};\n`);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const server = JSON.parse(readFileSync(configPath, "utf8")).mcp.fixture;
+  server.command = [process.execPath, "run", launcher];
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx_design: server } }));
+  gateway = startFakeGateway([fakeGatewayFinalText("Session started.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  await tui.sendText("Start session.");
+  await tui.waitForText("Session started.");
+  await tui.sendText("/diff node:missing");
+  await tui.waitForText("Supply a source", 30000);
+  expect(gateway.requests).toHaveLength(1);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 45000);
+
+for (const denied of [false, true]) test.skipIf(!tmuxAvailable())("diff command produces a host link without an AI turn" + (denied ? " and honors denies" : ""), async () => {
+  const root = createRoot("diff-command", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const server = JSON.parse(readFileSync(configPath, "utf8")).mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = "design_diff";
+  server.environment.FX_MCP_RAW_RESULT = "1";
+  server.environment.FX_MCP_DIFF_DELAY_MS = "3000";
+  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify({ status: "ready", url: "http://127.0.0.1:12345/test/view" });
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
+  if (denied) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission: { mcp_fx_design_diff: "deny" } }));
+  gateway = startFakeGateway([fakeGatewayFinalText("Session started.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  await tui.sendText("Start session.");
+  await tui.waitForText("Session started.");
+  const count = gateway.requests.length;
+  await tui.sendText("/diff node:artboard");
+  if (!denied) {
+    await tui.waitForText("Comparing", 1500);
+    await tui.sendLiteralText("still typing");
+    await tui.waitForText("still typing", 1000);
+    expect(await tui.capturePane()).not.toContain("Open viewer");
+  }
+  try { await tui.waitForText(denied ? "restricted" : "Open viewer", 15000); }
+  catch (error) { throw new Error(String(error) + "\n" + readFileSync(stderrPath, "utf8")); }
+  expect(gateway.requests.length).toBe(count);
+  if (!denied) {
+    expect(await tui.capturePane()).toContain("still typing");
+    expect(await tui.capturePane()).not.toContain("Comparing");
+    expect(await tui.capturePane()).toContain("Diff ready");
+    expect(await tui.capturePaneEscapes()).toContain("http://127.0.0.1:12345/test/view");
+  } else expect(await tui.capturePane()).not.toContain("Open viewer");
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  if (!denied) {
+    await tui.sendKeys("C-u");
+    await tui.sendText("/diff node:artboard");
+    await tui.waitForText("Comparing", 1500);
+  }
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 30000);
+
+test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("design capture uses the requested hydrated state through the host", async () => {
+  const root = createRoot("state-capture", LEGACY_FIXTURE);
+  const browserCache = join(homedir(), ".agent-browser", "browsers");
+  if (existsSync(browserCache)) {
+    mkdirSync(join(root.home, ".agent-browser"), { recursive: true });
+    symlinkSync(browserCache, join(root.home, ".agent-browser", "browsers"), "dir");
+  }
+  writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission: { mcp_fx_design_capture_source: "allow" } }));
+  const page = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(`<main>Loading</main><script>setTimeout(()=>{const main=document.querySelector('main');main.id=sessionStorage.getItem('owned')==='true'?'owned':'purchase';main.textContent=main.id==='owned'?'Owned dashboard':'Purchase page'},200)</script>`, { headers: { "Content-Type": "text/html" } }) });
+  try {
+    gateway = startFakeGateway([
+      fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_fx_design_capture_source" }),
+      fakeGatewayToolCall("capture", "mcp_fx_design_capture_source", { workspace: root.workspace, url: `http://127.0.0.1:${page.port}`, selector: "main", ready_selector: "#owned", session_storage: { owned: "true" }, state_label: "Owned dashboard" }),
+      fakeGatewayFinalText("State capture finished."),
+    ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+    const stderrPath = join(root.root, "stderr.log");
+    tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+    await tui.waitForComposer();
+    for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) { await tui.sendKeys("BTab"); await Bun.sleep(300); }
+    await tui.waitForText("DESIGN");
+    await tui.sendText("Capture the owned dashboard state. Do not write to Paper.");
+    await tui.waitForText("State capture finished.", 30_000);
+    const sessions = join(root.home, ".fx", "sessions");
+    const records = readdirSync(sessions, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => {
+      const directory = join(sessions, entry.name, "design");
+      return existsSync(directory) ? readdirSync(directory).filter(name => name.endsWith(".json")).map(name => JSON.parse(readFileSync(join(directory, name), "utf8"))) : [];
+    });
+    if (records.length !== 1) throw new Error(gateway.requests.at(-1)?.body.match(/Browser command failed.{0,1600}/)?.[0] ?? await tui.capturePane());
+    expect(records[0].root.text).toBe("Owned dashboard");
+    expect(records[0].capture_context.policy).toBe(3);
+    await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+    expect(await tui.waitForSessionEnd()).toBe(true);
+    expect(tui.paneStatus().status).toBe(0);
+    expect(readFileSync(stderrPath, "utf8")).toBe("");
+  } finally { page.stop(true); }
+}, 60000);
+
+test.skipIf(!tmuxAvailable())("design completion gate stops after one blocked continuation", async () => {
+  const root = createRoot("design-blocked", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const server = config.mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = "import_source";
+  writeFileSync(configPath, JSON.stringify({ mcp: { design: server } }));
+  gateway = startFakeGateway([
+    fakeGatewayToolCall("select", "mcp_select_tool", { name: "mcp_design_import_source" }),
+    fakeGatewayToolCall("import", "mcp_design_import_source", { text: "fixture" }),
+    fakeGatewayFinalText("Verification is blocked."),
+    fakeGatewayFinalText("Stopped: receipt recovery requires host evidence."),
+  ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) {
+    await tui.sendKeys("BTab");
+    await Bun.sleep(200);
+  }
+  await tui.waitForText("DESIGN");
+  await tui.sendText("Import the fixture and stop if verification cannot proceed.");
+  await tui.waitForText("Stopped: receipt recovery requires host evidence.", 30_000);
+  await Bun.sleep(1000);
+  expect(gateway.requests).toHaveLength(4);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c");
+  await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+}, 60_000);
+
+for (const operation of ["verify", "diff"]) test.skipIf(!tmuxAvailable())(`design ${operation} shortcut opens the latest preview without exiting or consuming the draft`, async () => {
+  const root = createRoot("diff-shortcut", LEGACY_FIXTURE);
+  const configPath = join(root.home, ".fx", "mcp.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const url = "http://127.0.0.1:12345/test/checkpoint/view";
+  const server = config.mcp.fixture;
+  server.environment.FX_MCP_INITIAL_TOOL_NAME = `design_${operation}`;
+  server.environment.FX_MCP_RAW_RESULT = "1";
+  server.environment.FX_MCP_RESULT_TEXT = JSON.stringify(operation === "diff" ? { status: "ready", url } : { inspector: { state: "needs-repair", url, auto_open: false } });
+  writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
+  const bin = join(root.root, "bin");
+  mkdirSync(bin);
+  const opened = join(root.root, "opened-url");
+  for (const launcher of ["xdg-open", "open"]) {
+    const path = join(bin, launcher);
+    writeFileSync(path, '#!/bin/sh\nprintf "%s" "$1" > "$FX_DIFF_OPEN_LOG"\n');
+    chmodSync(path, 0o755);
+  }
+  gateway = startFakeGateway([
+    fakeGatewayToolCall("select", "mcp_select_tool", { name: `mcp_fx_design_${operation}` }),
+    fakeGatewayToolCall("verify", `mcp_fx_design_${operation}`, operation === "diff" ? { target: "node:board http://localhost:3000" } : { text: "verify" }),
+    fakeGatewayFinalText("Preview available."),
+  ], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: {
+    ...fixtureEnv(root, gateway), FX_PERMISSION_MODE: "yolo", PATH: `${bin}:${process.env.PATH}`, FX_DIFF_OPEN_LOG: opened,
+  } });
+  await tui.waitForComposer();
+  await tui.sendText("Verify the design preview.");
+  await tui.waitForText("Preview available.", 30_000);
+  // Yolo's safety warning deliberately takes priority over normal footer tips.
+  await tui.sendText("/permissions auto");
+  await tui.waitForText("Diff ready", 15_000);
+  await tui.sendKeys("C-d");
+  await tui.waitForPane((pane) => existsSync(opened) && pane.includes("Diff ready"), 10_000);
+  expect(readFileSync(opened, "utf8")).toBe(url);
+  await tui.sendKeys("draft");
+  await tui.sendKeys("C-d");
+  await tui.waitForPane((pane) => existsSync(opened) && pane.includes("draft"), 10_000);
+  expect(readFileSync(opened, "utf8")).toBe(url);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+  await tui.sendKeys("C-c");
+  await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+}, 60_000);
 const TOOL_NAME = "mcp_fixture_echo";
 const MODERN_RESULT = "MODERN_MCP_TOOL_RESULT";
 const LEGACY_RESULT = "LEGACY_MCP_TOOL_RESULT";

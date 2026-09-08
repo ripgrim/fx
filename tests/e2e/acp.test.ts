@@ -8495,7 +8495,7 @@ describe.skipIf(!HAS_API_KEY)("acp: model-backed protocol", () => {
         const modeOpt = resp.result.configOptions.find((o: any) => o.id === "mode");
         expect(modeOpt).toBeDefined();
         expect(Array.isArray(modeOpt.options)).toBe(true);
-        expect(modeOpt.options.map((option: any) => option.value)).toEqual(["code", "ask"]);
+        expect(modeOpt.options.map((option: any) => option.value)).toEqual(["code", "ask", "design"]);
 
         const notification = await client.readLine() as any;
         expect(notification.method).toBe("session/update");

@@ -33,7 +33,7 @@ pub fn Runtime(comptime App: type) type {
             if (try loadValue(app, "mode")) |mode_id| {
                 defer app.alloc.free(mode_id);
                 if (modes.lookup(mode_id)) |mode| {
-                    app_permission_runtime.Runtime(App).setMode(app, mode.permission_mode);
+                    app_permission_runtime.Runtime(App).setProductMode(app, mode.id, mode.permission_mode);
                 } else {
                     debug_trace.logf(
                         "host_config",
@@ -66,6 +66,11 @@ pub fn Runtime(comptime App: type) type {
         pub fn persistPermissionMode(_: *App, mode: PermissionMode) void {
             if (comptime !runtime_profile.allows(App, .js_host_config)) return;
             persist("mode", configIdForPermissionMode(mode));
+        }
+
+        pub fn persistModeId(_: *App, mode_id: []const u8) void {
+            if (comptime !runtime_profile.allows(App, .js_host_config)) return;
+            persist("mode", mode_id);
         }
     };
 }
