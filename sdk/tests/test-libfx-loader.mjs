@@ -122,7 +122,7 @@ try {
     for (const create of [createFxAgent, createFxTerminal]) {
       const missingWasm = pathToFileURL(resolve(dir, "missing.wasm"));
       await assert.rejects(
-        create({ nativeAddon: nativeUrl, backend: "wasm", wasm: missingWasm, apiKey: "loader-key" }),
+        create({ nativeAddon: nativeUrl, backend: "wasm", wasm: missingWasm, apiKey: "loader-key", terminal: { write() {} } }),
         (error) => available
           ? error?.code === "ENOENT" && error.path === resolve(dir, "missing.wasm")
           : error?.code === "LIBFX_JSPI_REQUIRED" &&
