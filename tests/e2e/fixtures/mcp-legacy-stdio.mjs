@@ -180,6 +180,7 @@ function handle(message) {
   }
 
   if (message.method === "server/discover") {
+    if (process.env.FX_MCP_IGNORE_DISCOVERY === "1") return;
     if (discoveryInvalidParams) {
       send({
         jsonrpc: "2.0",
@@ -361,6 +362,10 @@ function handle(message) {
   if (message.method === "tools/call") {
     if (process.env.FX_MCP_DIFF_DELAY_MS && !message.fixtureDelayed) {
       setTimeout(() => handle({ ...message, fixtureDelayed: true }), Number(process.env.FX_MCP_DIFF_DELAY_MS));
+      return;
+    }
+    if (mode === "draft7_schema" && draft7Pattern && !new RegExp(draft7Pattern, "u").test(message.params?.arguments?.text)) {
+      send({ jsonrpc: "2.0", id: message.id, result: { isError: true, content: [{ type: "text", text: "text violates the server pattern" }] } });
       return;
     }
     const progressToken = message.params?._meta?.progressToken;

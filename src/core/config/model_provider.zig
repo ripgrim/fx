@@ -23,6 +23,7 @@ pub fn parse(value: []const u8) ?ProviderId {
 
 pub fn authorizesCredential(provider: ProviderId, source: ?types.CredentialSource) bool {
     const selected = source orelse return false;
+    if (selected == .host_managed) return true;
     return switch (provider) {
         .gateway => selected != .chatgpt_subscription and
             selected != .grok_subscription and

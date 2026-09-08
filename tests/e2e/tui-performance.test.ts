@@ -59,8 +59,6 @@ const MEASURED_ACTION_NAMES = [
   "fileQuery",
   "questionNavigate",
   "approvalNavigate",
-  "hostedTerminalInput",
-  "subagentManagerOpen",
   "fullOpen",
   "fullScroll",
   "fullScrollCacheMiss",
@@ -70,12 +68,9 @@ const MEASURED_ACTION_NAMES = [
   ...LOCAL_MENU_ACTIONS.map((action) => action.name),
 ] as const;
 
-const INFORMATIONAL_PANE_ACTION_NAMES = new Set<string>([
-  "hostedTerminalInput",
-]);
+const INFORMATIONAL_PANE_ACTION_NAMES = new Set<string>();
 
 const APP_PANE_ACTION_NAMES = new Set<string>([
-  "subagentManagerOpen",
   ...LOCAL_MENU_ACTIONS.map((action) => action.name),
 ]);
 
@@ -660,22 +655,26 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
         }],
       }),
       fakeGatewayFinalText("PERF_QUESTION_DONE"),
-      fakeGatewayToolCall("performance-approval", "terminal", {
-        action: "exec",
-        command: "touch performance-approval.txt",
-        timeout_ms: 600_000,
+      fakeGatewayToolCall("performance-approval", "shell", {
+        request: {
+          action: "run",
+          command: "touch performance-approval.txt",
+          profile: "clean",
+          timeout_ms: 600_000,
+        },
       }),
       fakeGatewayFinalText("PERF_APPROVAL_DONE"),
-      fakeGatewayToolCall("performance-terminal", "terminal", {
-        action: "start",
-        cwd: fixture.workspace,
-        command:
-          "printf 'PERF_TERMINAL_READY\\n'; " +
-          "while :; do sleep 1; done",
-        backend: "native",
-        return_when: { kind: "match", pattern: "PERF_TERMINAL_READY" },
-        wait_ceiling_ms: 20_000,
-        dimensions: { rows: 24, columns: 80 },
+      fakeGatewayToolCall("performance-terminal", "shell", {
+        request: {
+          action: "run",
+          cwd: fixture.workspace,
+          command:
+            "printf 'PERF_TERMINAL_READY\\n'; " +
+            "while :; do sleep 1; done",
+          profile: "clean",
+          tty: true,
+          yield_time_ms: 0,
+        },
       }),
       (body) => {
         hostedTerminalSessionId = findSessionId(JSON.parse(body)) ?? "";
@@ -684,10 +683,12 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
         }
         return fakeGatewayFinalText("PERF_TERMINAL_AGENT_READY");
       },
-      () => fakeGatewayToolCall("performance-terminal-close", "terminal", {
-        action: "close",
-        session_id: hostedTerminalSessionId,
-        close_policy: "force",
+      () => fakeGatewayToolCall("performance-terminal-close", "shell", {
+        request: {
+          action: "stop",
+          session_id: hostedTerminalSessionId,
+          force: true,
+        },
       }),
       fakeGatewayFinalText("PERF_TERMINAL_CLOSED"),
       fakeGatewayFinalText(secondTranscript),
@@ -825,19 +826,17 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
       }
 
       for (let cycle = 0; cycle < WARMUPS + SAMPLES; cycle += 1) {
-        session.sendKeysImmediate(["C-u"]);
+        await session.sendKeys("C-u");
         await session.waitForComposer(TIMEOUT);
-        await session.sendLiteralText("/login");
         const open = await measureAction(
           fixture.tapePath,
-          () => session!.sendKeysImmediate(["Enter"]),
-          () => session!.waitForText("Connections", TIMEOUT),
-          "Connections",
+          () => session!.sendLiteralImmediate("/login "),
+          () => session!.waitForPane(
+            (pane) => pane.includes("vercel") && pane.includes("codex") && pane.includes("grok"),
+            TIMEOUT,
+          ),
+          "vercel",
         );
-        session.sendKeysImmediate(["Escape"]);
-        await session.waitForComposer(TIMEOUT);
-        session.sendKeysImmediate(["C-u"]);
-        await session.waitForComposer(TIMEOUT);
         if (cycle >= WARMUPS) appendMeasured(samples.loginOpen, open);
       }
 
@@ -924,16 +923,6 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
         }
       }
 
-      for (let cycle = 0; cycle < WARMUPS + SAMPLES; cycle += 1) {
-        const before = await session.capturePane();
-        const open = await measurePaneAction(
-          () => session!.sendKeysImmediate(["C-x"]),
-          () => waitForPaneText(session!, "Agents & processes", before),
-        );
-        await closeSurface(session, "Agents & processes", "C-x");
-        if (cycle >= WARMUPS) appendMeasured(samples.subagentManagerOpen, open);
-      }
-
       await session.sendText("Open the performance question.");
       await session.waitForText("Which performance path should I use?", TIMEOUT);
       for (let cycle = 0; cycle < WARMUPS + SAMPLES; cycle += 1) {
@@ -971,30 +960,15 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
       session.sendKeysImmediate(["1"]);
       await session.waitForText("PERF_TERMINAL_AGENT_READY", TIMEOUT);
       await session.waitForComposer(TIMEOUT);
-      session.sendKeysImmediate(["C-x"]);
-      await session.waitForText("Background processes", TIMEOUT);
-      session.sendKeysImmediate(["Enter"]);
-      await session.waitForText("PERF_TERMINAL_READY", TIMEOUT);
-      for (let cycle = 0; cycle < WARMUPS + SAMPLES; cycle += 1) {
-        const before = await session.capturePane();
-        const input = await measurePaneAction(
-          () => session!.sendLiteralImmediate(cycle % 2 === 0 ? "x" : "y"),
-          () => waitForPaneChange(session!, before),
-        );
-        if (cycle >= WARMUPS) appendMeasured(samples.hostedTerminalInput, input);
-      }
-      await session.sendHexBytes(["1d", "64"]);
-      await session.waitForText("Background processes", TIMEOUT);
-      session.sendKeysImmediate(["C-x"]);
-      await session.waitForComposer(TIMEOUT);
       await session.sendText("Close the performance terminal.");
-      await session.waitForText("terminal close", TIMEOUT);
+      await session.waitForText("shell stop", TIMEOUT);
       session.sendKeysImmediate(["1"]);
       await session.waitForText("PERF_TERMINAL_CLOSED", TIMEOUT);
       await session.waitForComposer(TIMEOUT);
       const resourcesBefore = await waitForResourceStability(pid);
       expect(resourcesBefore.threads - preFeatureResources.threads).toBeLessThanOrEqual(2);
-      expect(resourcesBefore.descriptors - preFeatureResources.descriptors).toBeLessThanOrEqual(3);
+      // Three terminal routes plus command-replay logs, commands, and tool-results routes.
+      expect(resourcesBefore.descriptors - preFeatureResources.descriptors).toBeLessThanOrEqual(6);
       expect(resourcesBefore.rssKib - preFeatureResources.rssKib).toBeLessThan(16 * 1024);
 
       const peakResources = await peakResourcesWhile(pid, async () => {
@@ -1006,8 +980,6 @@ test.skipIf(!ENABLED || !tmuxAvailable())(
         boundary: "recorded application stdin frame to recorded stdout frame",
         boundaryExceptions: {
           catalogMenus: "user input dispatch to changed exclusive catalog pane",
-          subagentManagerOpen: "user input dispatch to changed manager pane",
-          hostedTerminalInput: "user input dispatch to changed hosted-terminal pane",
         },
         buildMode: "ReleaseSafe",
         warmups: WARMUPS,
@@ -1136,8 +1108,11 @@ test.skipIf(!LIVE_ENABLED || !tmuxAvailable())(
 
       session.sendKeysImmediate(["C-u"]);
       await session.waitForComposer(TIMEOUT);
-      await session.sendText("/login");
-      await session.waitForText("Connections", TIMEOUT);
+      await session.sendLiteralText("/login ");
+      await session.waitForPane(
+        (pane) => pane.includes("vercel") && pane.includes("codex") && pane.includes("grok"),
+        TIMEOUT,
+      );
       session.sendKeysImmediate(["Escape"]);
       await session.waitForComposer(TIMEOUT);
       expect(readFileSync(fixture.stderrPath, "utf8")).toBe("");
