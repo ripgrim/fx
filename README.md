@@ -128,7 +128,7 @@ Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `-
 
 Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.
 
-The viewer uses compact status labels, rounded previews, and an Expand control for synchronized zoom and pan. Diagnostics stay under Details. Capture age alone does not mark evidence outdated; connection loss is shown separately.
+The viewer uses compact status labels, rounded previews, and an Expand control for synchronized zoom and pan. Expanded view reveals Paper and changes with a draggable divider; arrow keys and Home/End also move it. A Source toggle shows the source screenshot without losing zoom or pan. Diagnostics stay under Details. Capture age alone does not mark evidence outdated; connection loss is shown separately.
 
 Design mode guides natural-language visual comparison requests to the same diff tool. For code components, the agent resolves an existing rendered story or example and its state before comparing; it asks when that target is ambiguous instead of replacing the visual diff with a written style audit.
 

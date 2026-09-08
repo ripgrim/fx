@@ -40,6 +40,12 @@ test("inspector uses text nodes for untrusted labels and labels residuals as app
   expect(inspectorHtml).not.toContain("outdated · last checkpoint");
   expect(inspectorHtml).toContain("prefers-reduced-motion");
   expect(inspectorHtml).toContain('id="expand" disabled');
+  expect(inspectorHtml).toContain('points="88 64 192 64 192 168"');
+  expect(inspectorHtml).toContain('aria-label="Paper and changes reveal"');
+  expect(inspectorHtml).toContain('id="source-toggle" aria-pressed="false"');
+  expect(inspectorHtml).toContain('clip-path:inset(0 0 0 var(--split,50%))');
+  expect(inspectorHtml).toContain('divider.setPointerCapture');
+  expect(inspectorHtml).toContain("event.key==='Home'");
   expect(inspectorHtml).toContain("max-width:760px");
 });
 
