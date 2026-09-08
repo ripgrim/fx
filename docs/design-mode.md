@@ -185,3 +185,9 @@ the actual desktop connection without modifying the canvas.
 Passing these checks is not a shipping decision. Full CI and the ship gate must
 pass on the exact commit, and the complete workflow must be exercised with the
 freshly built binary before it is described as ready.
+
+Managed execution resolves the target Paper tool's current definition separately
+from the wrapper's definition, while retaining schema, permission, and access
+checks. If the helper blocks an operation, its diagnostic is returned to the
+agent. A started operation without a recorded result still requires reconciliation;
+do not repeat the Paper write merely because the previous session exited.
