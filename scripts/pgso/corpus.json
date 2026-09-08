@@ -57,14 +57,6 @@
       "requires_tmux": false
     },
     {
-      "name": "direct-background",
-      "argv": ["{binary}", "background", "--json"],
-      "cwd": ".",
-      "env_set": {"FX_SKIP_ONBOARDING": "1"},
-      "timeout_seconds": 60,
-      "requires_tmux": false
-    },
-    {
       "name": "direct-doctor",
       "argv": ["{binary}", "doctor", "--json"],
       "cwd": ".",
@@ -86,6 +78,7 @@
     {"name": "e2e-config-persistence", "argv": ["bun", "test", "--max-concurrency", "1", "./config-persistence.test.ts"], "test_file": "config-persistence.test.ts"},
     {"name": "e2e-prompt-history", "argv": ["bun", "test", "--max-concurrency", "1", "./prompt-history.test.ts"], "test_file": "prompt-history.test.ts"},
     {"name": "e2e-auth-refresh", "argv": ["bun", "test", "--max-concurrency", "1", "./auth-refresh.test.ts"], "test_file": "auth-refresh.test.ts"},
+    {"name": "e2e-host-managed-auth", "argv": ["bun", "test", "--max-concurrency", "1", "./host-managed-auth.test.ts"], "test_file": "host-managed-auth.test.ts"},
     {"name": "e2e-file-tool-paths", "argv": ["bun", "test", "--max-concurrency", "1", "./file-tool-paths.test.ts"], "test_file": "file-tool-paths.test.ts"},
     {"name": "e2e-file-tool-permissions", "argv": ["bun", "test", "--max-concurrency", "1", "./file-tool-permissions.test.ts"], "test_file": "file-tool-permissions.test.ts"},
     {"name": "e2e-gateway-stream-lifecycle", "argv": ["bun", "test", "--max-concurrency", "1", "./gateway-stream-lifecycle.test.ts"], "test_file": "gateway-stream-lifecycle.test.ts"},
@@ -107,7 +100,6 @@
     {"name": "e2e-tui-resume-brutal", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-resume-brutal.test.ts"], "test_file": "tui-resume-brutal.test.ts"},
     {"name": "e2e-tui-permissions", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-permissions.test.ts"], "test_file": "tui-permissions.test.ts"},
     {"name": "e2e-tui-interrupt-recovery", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-interrupt-recovery.test.ts"], "test_file": "tui-interrupt-recovery.test.ts"},
-    {"name": "e2e-tui-subagent-manager", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-subagent-manager.test.ts"], "test_file": "tui-subagent-manager.test.ts"},
     {"name": "e2e-tui-terminal-tool", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-terminal-tool.test.ts"], "test_file": "tui-terminal-tool.test.ts"},
     {"name": "e2e-tui-native-clear-recovery", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-native-clear-recovery.test.ts"], "test_file": "tui-native-clear-recovery.test.ts"},
     {"name": "e2e-tui-gateway-stream-lifecycle", "argv": ["bun", "test", "--max-concurrency", "1", "./tui-gateway-stream-lifecycle.test.ts"], "test_file": "tui-gateway-stream-lifecycle.test.ts"}

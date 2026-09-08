@@ -29,7 +29,7 @@
 
 ### New Features
 
-- **Active-turn steering**: While fx is working, `Ctrl+Enter` steers the active turn at the next model boundary. `Enter` still queues an ordinary follow-up, and late steering becomes the next queued turn.
+- **Active-turn steering**: While fx is working, `Enter` steers the active turn at the next safe model boundary. If a tool is running, fx waits for it to finish; `Escape` interrupts the active work and applies the update as soon as the turn settles.
 - **Collapsed tool calls**: `/settings` now includes `Collapse tool calls`, which shows one summary per tool-call group in the main transcript. Individual calls remain available in the full transcript with `Ctrl+O`.
 - **Project MCP configuration**: Workspaces can now define project MCP servers in `.mcp.json` alongside profile servers.
 - **Top-level MCP management**: `fx mcp` is now a top-level command with `add`, `list`, `path`, `remove`, `auth`, `logout`, and `trust`.
