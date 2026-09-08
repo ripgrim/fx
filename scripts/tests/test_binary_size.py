@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -238,7 +239,7 @@ class BinarySizeCliTests(unittest.TestCase):
 
 
 class BinarySizeWorkflowTests(unittest.TestCase):
-    def test_pr_workflow_compares_all_supported_release_safe_targets(self) -> None:
+    def test_pr_workflow_compares_linux_x86_64_release_safe(self) -> None:
         self.assertTrue(WORKFLOW_PATH.is_file(), "binary-size workflow is missing")
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
@@ -246,15 +247,13 @@ class BinarySizeWorkflowTests(unittest.TestCase):
         self.assertNotIn("pull_request_target", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("runs-on: ${{ matrix.runner }}", workflow)
-        for name, target, runner in (
-            ("linux-x86_64", "x86_64-linux", "ubuntu-24.04"),
-            ("linux-aarch64", "aarch64-linux", "ubuntu-24.04-arm"),
-            ("macos-x86_64", "x86_64-macos", "macos-15-intel"),
-            ("macos-aarch64", "aarch64-macos", "macos-15"),
-        ):
-            self.assertIn(f"name: {name}", workflow)
-            self.assertIn(f"target: {target}", workflow)
-            self.assertIn(f"runner: {runner}", workflow)
+        self.assertEqual(
+            [("linux-x86_64", "x86_64-linux", "ubuntu-24.04")],
+            re.findall(
+                r"          - name: (\S+)\n            target: (\S+)\n            runner: (\S+)",
+                workflow,
+            ),
+        )
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("github.event.pull_request.base.sha", workflow)
         self.assertIn('test "$(git rev-parse HEAD)" = "$HEAD_SHA"', workflow)
