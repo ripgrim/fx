@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync } from "node:zlib";
-import { Adapter, Store, PaperReader, fontFamily, collectTokens, digest, inventory, serialize, threeWay, validateEditTargets, type DesignRecord } from "./helper";
+import { Adapter, Store, PaperReader, parseDiffParameters, fontFamily, collectTokens, digest, inventory, serialize, threeWay, validateEditTargets, type DesignRecord } from "./helper";
 
 const record = (workspace: string): DesignRecord => ({
   capture_context: { policy: 3, state_label: "test fixture", state_fingerprint: "fixture" },
@@ -15,6 +15,12 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("diff parameters accept explicit source, node, selector, and page state", () => {
+    expect(parseDiffParameters('node:board http://localhost:3000/demo --selector "main > section" --session-storage \'{"owned":"true"}\' --height 1000')).toEqual({ target: "node:board", url: "http://localhost:3000/demo", selector: "main > section", session_storage: { owned: "true" }, height: 1000 });
+    expect(() => parseDiffParameters('--height nope')).toThrow("Viewport");
+    expect(() => parseDiffParameters('--unknown value')).toThrow("Use /diff");
+    expect(() => parseDiffParameters('--selector "main')).toThrow("quoted");
+  });
   test("diff finds workspace imports across sessions and keeps evidence with its owner", async () => {
     const root = await mkdtemp(join(tmpdir(), "fx-diff-sessions-"));
     const directory = join(root, "sessions", "new");
@@ -25,22 +31,22 @@ describe("persistent design workflow", () => {
     const source = { ...record(workspace), artboard_id: "board", file_id: "file", source_revision: (await inventory(workspace)).revision };
     await owner.save(source);
     const adapter = new Adapter();
-    const compare = spyOn(adapter, "compareCapture").mockResolvedValue({ status: "ready" });
+    const compare = spyOn(adapter, "freshDiff").mockResolvedValue({ status: "ready" });
     const initialize = spyOn(PaperReader.prototype, "initialize").mockResolvedValue(undefined);
     const read = spyOn(PaperReader.prototype, "read").mockImplementation(async name => ({ content: [{ type: "text", text: JSON.stringify(name === "get_selection" ? { selectedNodes: [{ id: "board" }] } : { url: "https://app.paper.design/file/file/page" }) }] }));
     try {
       for (const target of ["", "node:board", "capture:capture", "/demo"]) {
         expect((await adapter.call("diff", { session_directory: directory, workspace, target })).status).toBe("ready");
-        expect(compare.mock.calls.at(-1)![0].directory).toBe(owner.directory);
+        expect(compare.mock.calls.at(-1)![3]!.id).toBe(source.id);
       }
       expect(await new Store(join(directory, "design")).list()).toEqual([]);
       const foreign = join(root, "other-project");
       await mkdir(foreign);
-      expect((await adapter.call("diff", { session_directory: directory, workspace: foreign, target: "node:board" })).message).toContain("No linked artboard");
+      expect((await adapter.call("diff", { session_directory: directory, workspace: foreign, target: "node:board" })).message).toContain("Supply a source");
       delete source.capture_context;
       await owner.save(source);
-      expect((await adapter.call("diff", { session_directory: directory, workspace, target: "node:board" })).message).toContain("Recapture required");
-      expect(compare).toHaveBeenCalledTimes(4);
+      expect((await adapter.call("diff", { session_directory: directory, workspace, target: "node:board" })).status).toBe("ready");
+      expect(compare).toHaveBeenCalledTimes(5);
     } finally { compare.mockRestore(); initialize.mockRestore(); read.mockRestore(); await adapter.close(); await rm(root, { recursive: true }); }
   });
   test("diff resolves linked targets and refuses ambiguous or unmapped selections", async () => {
@@ -53,7 +59,7 @@ describe("persistent design workflow", () => {
       expect(name).toBe("get_selection");
       return { content: [{ type: "text", text: JSON.stringify({ selectedNodes }) }] };
     });
-    const calls = spyOn(adapter, "compareCapture").mockResolvedValue({ status: "ready", url: "http://127.0.0.1:1234/a/view" });
+    const calls = spyOn(adapter, "freshDiff").mockResolvedValue({ status: "ready", url: "http://127.0.0.1:1234/a/view" });
     try {
       const source = record(directory);
       source.source_revision = (await inventory(directory)).revision;

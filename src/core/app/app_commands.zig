@@ -1300,6 +1300,7 @@ pub fn Handlers(comptime App: type) type {
         fn commandHandleDiff(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             if (comptime !@hasDecl(App, "acquireMcpRuntime") or !@hasField(App, "permission_engine") or !@hasField(App, "design_diff")) return error.McpRuntimeUnavailable;
+            if (app_session_runtime.Runtime(App).activeSessionId(app) == null) try app_session_runtime.Runtime(App).beginFreshPersistedSession(app);
             @import("../design/diff_command.zig").run(app, rest, app_session_runtime.Runtime(App).activeSessionId(app)) catch {
                 try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Comparison unavailable. Check the capture and MCP connection." }, true);
             };

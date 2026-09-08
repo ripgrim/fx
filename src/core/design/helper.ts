@@ -13,6 +13,38 @@ export const VERSION = 1;
 type Json = Record<string, any>;
 const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 export const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+
+export function parseDiffParameters(input: string) {
+  const tokens: string[] = [];
+  let token = "", quote = "", started = false;
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (quote) {
+      if (char === quote) quote = "";
+      else if (char === "\\" && input[i + 1] === quote) token += input[++i];
+      else token += char;
+    } else if (char === '"' || char === "'") { quote = char; started = true; }
+    else if (/\s/.test(char)) { if (started) tokens.push(token); token = ""; started = false; }
+    else { token += char; started = true; }
+  }
+  if (quote) throw new Error("Close the quoted parameter.");
+  if (started) tokens.push(token);
+  const result: Json = { target: "" };
+  const options: Record<string, string> = { "--selector": "selector", "--ready-selector": "ready_selector", "--width": "width", "--height": "height", "--session-storage": "session_storage", "--local-storage": "local_storage" };
+  for (let i = 0; i < tokens.length; i++) {
+    const value = tokens[i], key = options[value];
+    if (key) {
+      if (++i === tokens.length) throw new Error(`Missing value for ${value}.`);
+      result[key] = key.endsWith("storage") ? JSON.parse(tokens[i]) : key === "width" || key === "height" ? Number(tokens[i]) : tokens[i];
+      if ((key === "width" || key === "height") && (!Number.isInteger(result[key]) || result[key] < 1 || result[key] > 10000)) throw new Error("Viewport dimensions must be between 1 and 10000.");
+    } else if (/^https?:\/\//.test(value)) {
+      if (result.url) throw new Error("Supply one source URL.");
+      result.url = new URL(value).href;
+    } else if (!result.target && /^(node:|capture:|\/)/.test(value)) result.target = value;
+    else throw new Error("Use /diff node:ID URL [--selector 'CSS selector'].");
+  }
+  return result;
+}
 const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 export interface DesignNode {
@@ -592,7 +624,7 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
-  tool("diff", "Compare a linked Paper artboard against its saved source capture without editing Paper or source. Optional target is node:ID, capture:ID, or a linked route.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
+  tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, use an existing workspace link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
@@ -611,6 +643,35 @@ export const TOOLS = [
 export class Adapter {
   constructor(readonly inspector = new Inspector()) {}
   async close() { await this.inspector.close(); }
+  async freshDiff(store: Store, args: Json, parameters: Json, previous?: DesignRecord) {
+    const paper = new PaperReader();
+    await paper.initialize();
+    const info = paperObject(await paper.read("get_basic_info", {}));
+    const fileId = typeof info.url === "string" ? new URL(info.url).pathname.split("/")[2] : undefined;
+    if (!fileId) return { status: "blocked", message: "Open a Paper file first." };
+    let nodeId = parameters.target.startsWith("node:") ? parameters.target.slice(5) : previous?.artboard_id;
+    if (!nodeId) {
+      const selection = paperObject(await paper.read("get_selection", {}));
+      if (selection.selectedNodes?.length !== 1) return { status: "blocked", message: "Select one Paper node or supply node:ID." };
+      nodeId = selection.selectedNodes[0].id;
+    }
+    const file = previous?.file_id ?? fileId;
+    const board = file === fileId && Array.isArray(info.artboards) ? info.artboards.find((entry: Json) => entry.id === nodeId) : undefined;
+    // Confirm the target before launching a browser. No Paper writes are used.
+    await paper.read("get_node_info", { nodeId, fileId: file });
+    const captured = await this.call("capture_source", {
+      session_directory: args.session_directory, workspace: args.workspace ?? previous?.workspace,
+      url: parameters.url ?? previous?.url, selector: parameters.selector ?? previous?.selector ?? "body",
+      width: parameters.width ?? previous?.viewport.width ?? board?.width ?? 1440, height: parameters.height ?? previous?.viewport.height ?? board?.height ?? 900,
+      ready_selector: parameters.ready_selector, session_storage: parameters.session_storage, local_storage: parameters.local_storage,
+      fresh: true,
+    });
+    const source = await store.load(captured.capture_id);
+    // A comparison owns a separate record; never rebind or alter an imported design.
+    const comparison = { ...source, id: randomUUID(), artboard_id: nodeId, file_id: file, operations: [] };
+    await store.save(comparison);
+    return this.compareCapture(store, comparison);
+  }
   async compareCapture(store: Store, record: DesignRecord) {
     if (record.capture_context?.policy !== 3) return { status: "blocked", message: "Recapture the intended page state before comparing." };
     if (record.operations.some(operation => operation.status !== "applied")) return { status: "blocked", message: "Finish the import before comparing." };
@@ -647,6 +708,10 @@ export class Adapter {
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
     if (name === "diff") {
+      let parameters: Json;
+      try { parameters = parseDiffParameters(String(args.target ?? "")); }
+      catch (error) { return { status: "blocked", message: (error as Error).message }; }
+      if (parameters.url) return this.freshDiff(store, args, parameters);
       const stores = [store];
       const workspace = args.workspace ? await realpath(args.workspace) : undefined;
       // Session directories are host-bound. Search only sibling sessions in this profile,
@@ -663,7 +728,7 @@ export class Adapter {
         }
       }
       let records = [...owners.keys()];
-      const target = String(args.target ?? "").trim();
+      const target = parameters.target;
       if (target.startsWith("capture:")) records = records.filter(record => record.id === target.slice(8));
       else if (target.startsWith("node:")) records = records.filter(record => record.artboard_id === target.slice(5));
       else if (target) records = records.filter(record => new URL(record.url).pathname === target);
@@ -682,12 +747,10 @@ export class Adapter {
         else records.sort((a, b) => (b.verification?.checked_at ?? "").localeCompare(a.verification?.checked_at ?? ""));
         if (!selection.selectedNodes.length && records.length > 1 && records[0].verification?.checked_at && records[0].verification.checked_at !== records[1].verification?.checked_at) records = records.slice(0, 1);
       }
-      if (!records.length) return { status: "blocked", message: "No linked artboard. Select an imported artboard or use /diff capture:ID." };
+      if (!records.length) return { status: "blocked", message: "Supply a source: /diff node:ID http://localhost:3000/path" };
       if (records.length !== 1) return { status: "blocked", message: "Choose a capture: " + records.map(record => `/diff capture:${record.id}`).join(" · ") };
       const record = records[0];
-      if (!record.file_id || record.capture_context?.policy !== 3) return { status: "blocked", message: "Recapture required. This import predates verified page-state capture." };
-      if ((await inventory(record.workspace)).revision !== record.source_revision) return { status: "blocked", message: "Source changed. Recapture the intended page state before comparing." };
-      return this.compareCapture(owners.get(record)!, record);
+      return this.freshDiff(store, args, parameters, record);
     }
     if (name === "discover") {
       const source = await inventory(args.workspace);
@@ -741,7 +804,7 @@ export class Adapter {
           node.children.forEach(resolveFonts);
         };
         resolveFonts(snapshot.root);
-        const capture_id = digest({ capture_context, workspace: source.root, source_revision: source.revision, url: url.href, selector: args.selector, viewport, root: snapshot.root });
+        const capture_id = args.fresh ? randomUUID() : digest({ capture_context, workspace: source.root, source_revision: source.revision, url: url.href, selector: args.selector, viewport, root: snapshot.root });
         try {
           const existing = await store.load(capture_id);
           return { version: VERSION, status: "captured", capture_id: existing.id, source_revision: existing.source_revision, screenshot: existing.screenshot, findings: existing.findings, reused: true };

@@ -120,9 +120,11 @@ Inside a saved session, `/permissions remember <allow|deny> <tool-name> <argumen
 
 Stateful design captures use an isolated browser with optional explicit storage and a readiness selector. DOM and screenshot consistency checks reject changing captures before import; they do not inherit your open browser tab's state.
 
-Use `/diff` to compare a linked Paper artboard against its saved capture without an AI turn. The host returns a clickable viewer link. `/diff node:ID`, `/diff capture:ID`, and linked routes select explicit targets; Ctrl+D opens the latest ready comparison. If an older connected helper lacks the command, fx refreshes it automatically before retrying.
+Use `/diff node:ID URL` to capture a live page and compare it with Paper, without an import or AI turn. The host returns a clickable viewer link; Ctrl+D opens the latest comparison. Omit `node:ID` to use the current Paper selection. Without a URL, `/diff`, `/diff node:ID`, `/diff capture:ID`, and linked routes resolve existing workspace imports across sessions and capture their source again. Original imports are not modified.
 
-Imports are found across sessions in the current workspace; their evidence stays in the original session. Captures made before page-state verification require recapturing before comparison.
+Example: `/diff node:2DY-0 http://localhost:3000/fullscreen/demo/compliance --selector body --height 1000`.
+
+Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `--session-storage`, and `--local-storage`. Quote selectors containing spaces and storage JSON, for example `--session-storage '{"owned":"true"}'`. Captures use an isolated browser's default state unless explicit storage is supplied; they do not inherit your open tab's state. fx hides the Next.js development overlay during capture.
 
 Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.
 

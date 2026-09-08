@@ -26,6 +26,44 @@ import {
 
 const MODEL = "openai/gpt-5";
 
+test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("diff command captures an explicit URL without an import or AI turn", async () => {
+  const root = createRoot("diff-direct", LEGACY_FIXTURE);
+  const browserCache = join(homedir(), ".agent-browser", "browsers");
+  if (existsSync(browserCache)) {
+    mkdirSync(join(root.home, ".agent-browser"), { recursive: true });
+    symlinkSync(browserCache, join(root.home, ".agent-browser", "browsers"), "dir");
+  }
+  const calls: string[] = [];
+  const paper = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    const rpc = await request.json();
+    if (!rpc.id) return new Response(null, { status: 204 });
+    let result: any = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "paper-fixture", version: "1" } };
+    if (rpc.method === "tools/call") {
+      calls.push(rpc.params.name);
+      result = rpc.params.name === "get_screenshot" ? { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1cAAAAASUVORK5CYII=" }] } : { content: [{ type: "text", text: JSON.stringify(rpc.params.name === "get_basic_info" ? { url: "https://app.paper.design/file/file/page" } : {}) }] };
+    }
+    return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+  } });
+  const page = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response('<main>Fresh page</main>', { headers: { "Content-Type": "text/html" } }) });
+  const helper = join(import.meta.dir, "../../src/core/design/helper.ts");
+  writeFileSync(join(root.home, ".fx", "mcp.json"), JSON.stringify({ mcp: { fx_design: { type: "local", command: [process.execPath, "run", helper], environment: { WSL_DISTRO_NAME: "", FX_DESIGN_PAPER_URL: `http://127.0.0.1:${paper.port}` } } } }));
+  gateway = startFakeGateway([], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  try {
+    tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+    await tui.waitForComposer();
+    await tui.sendText(`/diff node:board http://127.0.0.1:${page.port} --selector main --width 100 --height 100`);
+    await tui.waitForText("Open viewer", 60000);
+    expect(gateway.requests).toHaveLength(0);
+    expect(calls).toContain("get_screenshot");
+    expect(calls.every(name => name.startsWith("get_"))).toBe(true);
+    await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+    expect(await tui.waitForSessionEnd()).toBe(true);
+    expect(tui.paneStatus().status).toBe(0);
+    expect(readFileSync(stderrPath, "utf8")).toBe("");
+  } finally { page.stop(true); paper.stop(true); }
+}, 75000);
+
 test.skipIf(!tmuxAvailable())("diff command upgrades an already connected older managed helper", async () => {
   const root = createRoot("diff-managed", LEGACY_FIXTURE);
   const helperDirectory = join(root.home, ".fx", "helpers", "design");
@@ -43,12 +81,7 @@ test.skipIf(!tmuxAvailable())("diff command upgrades an already connected older 
   await tui.sendText("Start session.");
   await tui.waitForText("Session started.");
   await tui.sendText("/diff node:missing");
-  await tui.waitForText("No linked artboard", 30000);
-  const oldDesign = join(root.home, ".fx", "sessions", "earlier-session", "design");
-  mkdirSync(oldDesign, { recursive: true });
-  writeFileSync(join(oldDesign, "legacy.json"), JSON.stringify({ version: 1, id: "legacy", workspace: root.workspace, artboard_id: "older-board" }));
-  await tui.sendText("/diff node:older-board");
-  await tui.waitForText("Recapture required", 15000);
+  await tui.waitForText("Supply a source", 30000);
   expect(gateway.requests).toHaveLength(1);
   expect(readFileSync(stderrPath, "utf8")).toBe("");
   await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
