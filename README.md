@@ -128,6 +128,8 @@ Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `-
 
 Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.
 
+Design mode guides natural-language visual comparison requests to the same diff tool. For code components, the agent resolves an existing rendered story or example and its state before comparing; it asks when that target is ambiguous instead of replacing the visual diff with a written style audit.
+
 ## Embed fx
 
 fx builds as a native binary or WebAssembly. Applications embedding fx can provide network transport, session storage, configuration, permission handling, and terminal I/O.

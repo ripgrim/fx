@@ -25,6 +25,7 @@ pub fn authorizesCanvasTool(mode_id: []const u8, tool_name: []const u8) bool {
     if (!std.mem.eql(u8, mode_id, id)) return false;
     if (std.mem.startsWith(u8, tool_name, "mcp_paper_")) return true;
     const design_tools = [_][]const u8{
+        "mcp_fx_design_diff",
         "mcp_fx_design_discover",
         "mcp_fx_design_capture_source",
         "mcp_fx_design_source_tree",
@@ -414,6 +415,8 @@ fn raw_color_in_text(text: []const u8) ?[]const u8 {
 test "Design mode authorizes only Paper MCP tools" {
     try std.testing.expect(authorizesCanvasTool(id, "mcp_paper_write_html"));
     try std.testing.expect(authorizesCanvasTool(id, "mcp_fx_design_capture_source"));
+    try std.testing.expect(authorizesCanvasTool(id, "mcp_fx_design_diff"));
+    try std.testing.expect(!authorizesCanvasTool("code", "mcp_fx_design_diff"));
     try std.testing.expect(!authorizesCanvasTool(id, "mcp_design_import_source"));
     try std.testing.expect(!authorizesCanvasTool("code", "mcp_paper_write_html"));
     try std.testing.expect(!authorizesCanvasTool(id, "mcp_other_write_html"));
@@ -567,7 +570,11 @@ test "Design mode derives mandatory project preflight arguments" {
 pub const runtime_context =
     "Runtime context: interaction mode is design. Paper is the default canvas backend. Use the managed fx_design adapter, not a project-specific design MCP. " ++
     "Confirm the managed capture and execute tools are available before promising an import. If unavailable, stop the import and report the missing helper; do not repeatedly search, substitute shell browser scripts, hand-author a replacement, or advise restarting without evidence. Paper connectivity alone does not establish helper readiness. " ++
-    "Discover mcp_fx_design_discover, mcp_fx_design_capture_source, mcp_fx_design_source_tree, mcp_fx_design_prepare_import, mcp_fx_design_execute, mcp_fx_design_inspect, mcp_fx_design_prepare_edit, mcp_fx_design_compare, mcp_fx_design_check and mcp_fx_design_verify through capability_search. fx supplies the active session directory. " ++
+    "Discover mcp_fx_design_diff, mcp_fx_design_discover, mcp_fx_design_capture_source, mcp_fx_design_source_tree, mcp_fx_design_prepare_import, mcp_fx_design_execute, mcp_fx_design_inspect, mcp_fx_design_prepare_edit, mcp_fx_design_compare, mcp_fx_design_check and mcp_fx_design_verify through capability_search. fx supplies the active session directory. " ++
+    "An explicit request to diff or visually compare Paper with code means produce the visual diff viewer, not a written style audit. Discover and select mcp_fx_design_diff directly; inspect is only an import-record listing, and compare is for three-way edit reconciliation, not this visual comparison. No previous import is required. " ++
+    "For 'diff node 2ND-0 and the button component', resolve Button from the actual repository source and existing stories or rendered examples. Establish the real preview URL and a unique selector for the intended instance, including its props, theme and state. Use an existing Storybook iframe URL when available; do not require Storybook or invent a story ID, route, selector, component HTML, or matching state. Ask one concise question only when the intended instance is ambiguous or no rendered preview is available. Do not create a preview or alter application code unless requested. " ++
+    "Then call mcp_fx_design_diff with workspace set to the repository root and target formatted as 'node:2ND-0 <actual-preview-URL> --selector <quoted-CSS-selector>'. Optional --ready-selector, --width, --height, --session-storage and --local-storage control the rendered capture; storage values must be quoted JSON. This is a tool call, not an instruction for the user to run /diff. fx binds session_directory; never supply it yourself. " ++
+    "A successful visual diff requires status ready and a viewer URL from mcp_fx_design_diff. Show the generic viewer link only, without a prose comparison, matching checklist, or claim of fidelity. If blocked, report the actionable blocker once; do not substitute token comparisons or raw Paper JSX for a visual diff. " ++
     "Read Paper's paper-mcp-instructions through get_guide, not resource_list or prompt_list. Discover the requested route including its shell, actual source assets, fonts, CSS imports and scoped tokens. Storybook is optional. " ++
     "A URL does not identify a stateful screen. Capture uses an isolated browser, not the user's tab. Determine the intended state from the request and source; when ambiguous, ask which state to import. Use ready_selector and explicit session_storage/local_storage preparation when appropriate. Never invent ownership/authentication state or copy credentials. Capture state mismatches are capture failures, not Paper redesign requests. " ++
     "Capture the live page, inspect the source tree, then prepare_import. Call execute with each pending operation hash; no separate selection of the underlying Paper tool is needed. fx loads the exact payload, checks permission, executes Paper and records its real result. Inspect after each action for the next operation. Never supply receipts or recreate an existing SVG or image from perception. " ++

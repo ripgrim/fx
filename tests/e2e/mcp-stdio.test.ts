@@ -26,6 +26,32 @@ import {
 
 const MODEL = "openai/gpt-5";
 
+test.skipIf(!tmuxAvailable())("design requests receive visual diff guidance for code components", async () => {
+  const root = createRoot("diff-guidance", LEGACY_FIXTURE);
+  gateway = startFakeGateway([fakeGatewayFinalText("Guidance received.")], { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] });
+  const stderrPath = join(root.root, "stderr.log");
+  tui = await TmuxSession.create({ isolated: true, cwd: root.workspace, stderrPath, env: fixtureEnv(root, gateway) });
+  await tui.waitForComposer();
+  for (let i = 0; i < 4 && !(await tui.capturePane()).includes("DESIGN"); i++) {
+    await tui.sendKeys("BTab");
+    await Bun.sleep(300);
+  }
+  await tui.waitForText("DESIGN");
+  await tui.sendText("diff the Node IDs: 2ND-0 and the button component");
+  await tui.waitForText("Guidance received.", 30000);
+  const prompt = gateway.requests[0].body;
+  expect(prompt).toContain("mcp_fx_design_diff");
+  expect(prompt).toContain("not a written style audit");
+  expect(prompt).toContain("existing stories or rendered examples");
+  expect(prompt).toContain("No previous import is required");
+  expect(prompt).toContain("status ready and a viewer URL");
+  expect(prompt).toContain("never supply it yourself");
+  await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
+  expect(await tui.waitForSessionEnd()).toBe(true);
+  expect(tui.paneStatus().status).toBe(0);
+  expect(readFileSync(stderrPath, "utf8")).toBe("");
+}, 45000);
+
 test.skipIf(!tmuxAvailable() || !Bun.which("agent-browser"))("diff command captures an explicit URL without an import or AI turn", async () => {
   const root = createRoot("diff-direct", LEGACY_FIXTURE);
   const browserCache = join(homedir(), ".agent-browser", "browsers");
