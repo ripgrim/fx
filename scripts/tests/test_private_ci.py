@@ -5,6 +5,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class PrivateCiTests(unittest.TestCase):
+    def test_shared_binary_is_portable_and_checked_after_download(self):
+        workflow = (ROOT / '.github/workflows/full-ci.yml').read_text()
+        build = workflow.split('  build:\n', 1)[1].split('  native:', 1)[0]
+        self.assertIn('-Dcpu=baseline', build)
+        e2e = workflow.split('  e2e:\n', 1)[1]
+        self.assertLess(e2e.index('Restore tested binary'), e2e.index('ci_binary_smoke.py'))
+        self.assertLess(e2e.index('ci_binary_smoke.py'), e2e.index('Setup Bun'))
+
     def test_dispatcher_never_checks_out_pr_code(self):
         workflow = (ROOT / '.github/workflows/private-ci.yml').read_text()
         self.assertIn('pull_request_target:', workflow)

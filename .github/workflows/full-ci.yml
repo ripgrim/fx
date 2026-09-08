@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: python3 -m unittest discover -s scripts -p fork_release_gate_test.py
-      - run: python3 -m unittest scripts.tests.test_private_ci
+      - run: python3 -m unittest scripts.tests.test_private_ci scripts.tests.test_ci_binary_smoke
 
   build:
     if: ${{ !(vars.PRIVATE_CI_ENABLED == 'true' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'ripgrim' && github.event.pull_request.head.repo.full_name == 'ripgrim/fx') }}
@@ -51,7 +51,7 @@ jobs:
           cache-key: full-ci-build-${{ matrix.platform.name }}-${{ matrix.optimize }}
 
       - name: Build
-        run: zig build -Doptimize=${{ matrix.optimize }}
+        run: zig build -Doptimize=${{ matrix.optimize }} -Dcpu=baseline
 
       - name: Smoke test fresh binary
         shell: bash
@@ -165,6 +165,10 @@ jobs:
           mkdir -p zig-out/bin
           tar -xf "$RUNNER_TEMP/fx-ci/fx-ci.tar" -C zig-out/bin
           test -x zig-out/bin/fx
+
+      - name: Smoke test restored binary on this runner
+        timeout-minutes: 1
+        run: python3 scripts/ci_binary_smoke.py ./zig-out/bin/fx
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
