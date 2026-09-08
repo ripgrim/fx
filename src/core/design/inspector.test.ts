@@ -36,7 +36,10 @@ test("inspector uses text nodes for untrusted labels and labels residuals as app
   expect(inspectorHtml).toContain("Pixel diff is approximate.");
   expect(inspectorHtml).not.toContain("Click a capture to open");
   expect(inspectorHtml).toContain('<details id="diagnostics"><summary>Details</summary>');
-  expect(inspectorHtml).toContain("outdated · disconnected");
+  expect(inspectorHtml).toContain("Connection lost");
+  expect(inspectorHtml).not.toContain("outdated · last checkpoint");
+  expect(inspectorHtml).toContain("prefers-reduced-motion");
+  expect(inspectorHtml).toContain('id="expand" disabled');
   expect(inspectorHtml).toContain("max-width:760px");
 });
 
