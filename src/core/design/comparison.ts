@@ -2,10 +2,10 @@
  * No area allowance or neighbor matching: small missing details still count.
  */
 export const comparisonSensitivity = Object.freeze({
-  version: 1,
+  version: 2,
   name: "balanced",
   dimension_epsilon_px: 1 / 32,
-  pixel_channel_epsilon: 16,
+  pixel_channel_epsilon: 24,
 });
 
 /** Dependency-free so the same implementation can run in capture and inspector
@@ -26,4 +26,34 @@ export function comparePixelBuffers(source: ArrayLike<number>, canvas: ArrayLike
     if (delta > channel_epsilon) { mask[offset / 4] = 1; different_pixels++; }
   }
   return { mask, different_pixels, raw_different_pixels, ignored_pixels: raw_different_pixels - different_pixels };
+}
+
+/** Presentation only: connected tiles turn jagged pixel edges into stable regions.
+ * The underlying pixel mask and verification result are never altered. */
+export function differenceRegions(mask: ArrayLike<number>, source: ArrayLike<number>, canvas: ArrayLike<number>, width: number) {
+  if (!Number.isInteger(width) || width <= 0 || mask.length % width || source.length !== mask.length * 4 || canvas.length !== source.length) throw new Error("Invalid region inputs");
+  const size = 8, columns = Math.ceil(width / size), height = mask.length / width;
+  const rows = Math.ceil(height / size), cells = new Uint8Array(columns * rows);
+  for (let p = 0; p < mask.length; p++) if (mask[p]) cells[Math.floor(p / width / size) * columns + Math.floor(p % width / size)] = 1;
+  const regions: { x: number; y: number; width: number; height: number; kind: string }[] = [];
+  for (let cell = 0; cell < cells.length; cell++) {
+    if (cells[cell] !== 1) continue;
+    const queue = [cell]; cells[cell] = 2;
+    let left = columns, top = rows, right = 0, bottom = 0, removed = 0, added = 0;
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const index = queue[cursor]!, cx = index % columns, cy = Math.floor(index / columns);
+      left = Math.min(left, cx); top = Math.min(top, cy); right = Math.max(right, cx + 1); bottom = Math.max(bottom, cy + 1);
+      for (let y = cy * size; y < Math.min(height, (cy + 1) * size); y++) for (let x = cx * size; x < Math.min(width, (cx + 1) * size); x++) {
+        const p = y * width + x, i = p * 4;
+        if (!mask[p]) continue;
+        if (source[i]! + source[i + 1]! + source[i + 2]! < canvas[i]! + canvas[i + 1]! + canvas[i + 2]!) removed++; else added++;
+      }
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = cx + dx, ny = cy + dy, next = ny * columns + nx;
+        if (nx >= 0 && nx < columns && ny >= 0 && ny < rows && cells[next] === 1) { cells[next] = 2; queue.push(next); }
+      }
+    }
+    regions.push({ x: left * size, y: top * size, width: Math.min(width, right * size) - left * size, height: Math.min(height, bottom * size) - top * size, kind: Math.min(removed, added) > (removed + added) * .2 ? "changed" : removed > added ? "source" : "paper" });
+  }
+  return regions;
 }

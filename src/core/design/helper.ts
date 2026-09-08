@@ -1,6 +1,6 @@
 /** fx's managed design adapter. Paper mutations are executed by fx, never here. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, readdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, readdir, realpath, rm, stat } from "node:fs/promises";
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -281,7 +281,7 @@ export class PaperReader {
     if (!response.ok) throw new Error(`Paper initialization returned HTTP ${response.status}`);
   }
   async read(name: string, args: Json) {
-    if (!["get_selection", "get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
+    if (!["get_selection", "get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "export", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
     const result = await this.rpc("tools/call", { name, arguments: args });
     if (result.isError) throw new Error(JSON.stringify(result.content));
     return result;
@@ -290,11 +290,26 @@ export class PaperReader {
     const args = { nodeId, ...(fileId ? { fileId } : {}) };
     const nodes = await this.read("get_node_info", args);
     const jsx = await this.read("get_jsx", args);
-    const screenshot = await this.read("get_screenshot", { ...args, scale: 1 });
-    const image = screenshot.content?.find((part: Json) => part.type === "image");
-    if (!image?.data) throw new Error("Paper screenshot is unavailable");
-    return { nodes, jsx, image: `data:${image.mimeType};base64,${image.data}` };
+    // get_screenshot is JPEG-only in Paper Desktop. Export the actual canvas,
+    // never re-encode that lossy screenshot and call it lossless evidence.
+    const exported = await this.read("export", { type: "image", nodes: { [nodeId]: [{ format: "png", scale: "1x" }] }, ...(fileId ? { fileId } : {}) });
+    const payload = exported.structuredContent ?? JSON.parse(exported.content?.find((part: Json) => part.type === "text")?.text ?? "{}");
+    const entry = payload.exports?.find((item: Json) => item.nodeId === nodeId);
+    const image = await readPaperPng(entry?.filePath);
+    return { nodes, jsx, image };
   }
+}
+
+export async function readPaperPng(filePath: unknown): Promise<string> {
+  if (typeof filePath !== "string" || !filePath.toLowerCase().endsWith(".png")) throw new Error("Paper did not provide a lossless PNG export");
+  let path = filePath.replace(/\\+/g, "/");
+  if (path.startsWith("//")) throw new Error("Remote Paper exports are not supported");
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME && /^[A-Za-z]:\//.test(path)) path = `/mnt/${path[0]!.toLowerCase()}${path.slice(2)}`;
+  if (!isAbsolute(path)) throw new Error("Paper export must be a local absolute path");
+  if ((await stat(path)).size > 32 * 1024 * 1024) throw new Error("Paper PNG exceeds the capture limit");
+  const bytes = await readFile(path);
+  if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Paper export is not PNG; recapture required");
+  return `data:image/png;base64,${bytes.toString("base64")}`;
 }
 
 function paperObject(result: Json): Json {

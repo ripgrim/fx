@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { join, dirname, basename, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { comparePixelBuffers, comparisonSensitivity } from "./comparison";
+import { comparePixelBuffers, comparisonSensitivity, differenceRegions } from "./comparison";
 
 export type VerificationState = "building" | "checking" | "verified" | "needs-repair" | "outdated";
 export interface VerificationSnapshot {
@@ -166,10 +166,12 @@ export const inspectorHtml = `<!doctype html><html lang="en"><meta charset="utf-
 const $=id=>document.getElementById(id);let snapshot,images,crop,last='';
 const renderer_version=${JSON.stringify(service_version)};
 const comparePixels=${comparePixelBuffers.toString()};
+const regionsFor=${differenceRegions.toString()};
+const overlayMode=document.createElement('select');overlayMode.id='overlay-mode';overlayMode.setAttribute('aria-label','Highlight style');overlayMode.append(new Option('Regions','regions'),new Option('Pixels','pixels'));$('pixels').closest('label').after(overlayMode);overlayMode.onchange=draw;const changedLegend=document.createElement('span');changedLegend.textContent='~ Changed';changedLegend.style.color='oklch(65% .13 75)';document.querySelector('.legend').append(changedLegend);
 const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=reject;image.src=src});
 function draw(){if(!images)return;$('expand').disabled=false;$('full').disabled=!crop;document.querySelector('.views').setAttribute('aria-busy','false');const [a,b]=images;const region=crop||{x:0,y:0,width:Math.max(a.width,b.width),height:Math.max(a.height,b.height)};const width=Math.max(1,Math.ceil(region.width)),height=Math.max(1,Math.ceil(region.height));if(width*height>32000000)throw Error('Image exceeds preview limit');
 for(const [id,img] of [['source',a],['paper',b],['diff',b]]){const c=$(id);c.width=width;c.height=height;c.getContext('2d').drawImage(img,region.x,region.y,width,height,0,0,width,height)}
-if($('pixels').checked){const x=$('source').getContext('2d').getImageData(0,0,width,height).data,y=$('paper').getContext('2d').getImageData(0,0,width,height).data,ctx=$('diff').getContext('2d'),out=ctx.getImageData(0,0,width,height),comparison=comparePixels(x,y,snapshot?.visual?.sensitivity?.pixel_channel_epsilon??0);for(let i=0;i<x.length;i+=4){if(!comparison.mask[i/4])continue;const removed=x[i]+x[i+1]+x[i+2]<y[i]+y[i+1]+y[i+2];out.data[i]=removed?225:20;out.data[i+1]=removed?45:175;out.data[i+2]=removed?45:95;out.data[i+3]=255}ctx.putImageData(out,0,0)}if($('lightbox').open)syncLightbox()}
+if($('pixels').checked){const x=$('source').getContext('2d').getImageData(0,0,width,height).data,y=$('paper').getContext('2d').getImageData(0,0,width,height).data,ctx=$('diff').getContext('2d'),comparison=comparePixels(x,y,snapshot?.visual?.sensitivity?.pixel_channel_epsilon??${comparisonSensitivity.pixel_channel_epsilon});if(overlayMode.value==='regions'){for(const r of regionsFor(comparison.mask,x,y,width)){const color=r.kind==='changed'?'184,120,28':r.kind==='source'?'195,56,65':'30,142,99';ctx.fillStyle='rgba('+color+',.13)';ctx.strokeStyle='rgba('+color+',.85)';ctx.lineWidth=1.5;ctx.beginPath();ctx.roundRect(r.x+.75,r.y+.75,Math.max(1,r.width-1.5),Math.max(1,r.height-1.5),Math.min(4,r.width/2,r.height/2));ctx.fill();ctx.stroke()}}else{const out=ctx.getImageData(0,0,width,height);for(let i=0;i<x.length;i+=4){if(!comparison.mask[i/4])continue;const removed=x[i]+x[i+1]+x[i+2]<y[i]+y[i+1]+y[i+2];out.data[i]=removed?195:30;out.data[i+1]=removed?56:142;out.data[i+2]=removed?65:99;out.data[i+3]=255}ctx.putImageData(out,0,0)}}if($('lightbox').open)syncLightbox()}
 $('full').onclick=()=>{crop=undefined;draw()};$('pixels').onchange=draw;$('expand').onclick=()=>openLightbox('expand');
 const lightbox=$('lightbox');let lightbox_scale=1,pan_x=0,pan_y=0,lightbox_opener,prior_overflow='';const pointers=new Map();
 function transformLightbox(){for(const id of ['source','paper','diff'])$('lightbox-'+id).style.transform='translate(calc(-50% + '+pan_x+'px),calc(-50% + '+pan_y+'px)) scale('+lightbox_scale+')';$('zoom-value').value=Math.round(lightbox_scale*100)+'%'}

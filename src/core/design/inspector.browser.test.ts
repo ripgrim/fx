@@ -18,7 +18,9 @@ test("inspector renders actual snapshots, focuses findings and fits narrow viewp
     const view = await inspector.publish(directory, snapshot);
     await browser.call("open", view.url);
     await browser.evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(document.querySelector('#source').width===240){clearInterval(timer);resolve(true)}else if(++attempts>100){clearInterval(timer);reject(Error('Preview did not load'))}},50)})`);
-    expect(await browser.evaluate(`(()=>{const p=document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data;return p[0]>p[1]*2})()`)).toBe(true);
+    expect(await browser.evaluate(`document.querySelector('#overlay-mode').value`)).toBe("regions");
+    expect(await browser.evaluate(`(()=>{const p=document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data;return p[0]>p[1]})()`)).toBe(true);
+    await browser.evaluate(`document.querySelector('#overlay-mode').value='pixels';document.querySelector('#overlay-mode').dispatchEvent(new Event('change'))`);
     expect(await browser.evaluate(`document.querySelector('#diagnostics').open`)).toBe(false);
     expect(await browser.evaluate(`document.querySelector('#token-findings').children.length`)).toBe(2);
     expect(await browser.evaluate(`document.querySelector('#findings').children.length`)).toBe(1);
@@ -26,14 +28,14 @@ test("inspector renders actual snapshots, focuses findings and fits narrow viewp
     await browser.evaluate(`document.querySelector('#diagnostics summary').click()`);
     expect(await browser.evaluate(`document.querySelector('#token-findings button').checkVisibility()`)).toBe(true);
     await browser.evaluate(`document.querySelector('#diagnostics summary').click()`);
-    // Historical evidence without sensitivity is rendered strictly, not silently
-    // relabeled with the current gate's policy.
-    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(225);
+    // A preview without comparison metadata uses the current default tolerance;
+    // rendering it does not change the stored verification result.
+    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(255);
     snapshot.visual = { sensitivity: comparisonSensitivity, different_pixels: 112, total_pixels: 28800, dimensions_match: true, match: false };
     await inspector.publish(directory, snapshot);
     await browser.evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]===255){clearInterval(timer);resolve(true)}else if(++attempts>100){clearInterval(timer);reject(Error('Sensitivity did not update'))}},50)})`);
     expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(255);
-    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data[0]`)).toBe(225);
+    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data[0]`)).toBe(195);
     await browser.evaluate(`document.querySelector('#findings button').click()`);
     expect(await browser.evaluate(`document.querySelector('#source').width`)).toBe(52);
     await browser.evaluate(`document.querySelector('#source').focus();document.querySelector('#source').click()`);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { comparePixelBuffers, comparisonSensitivity } from "./comparison";
+import { comparePixelBuffers, comparisonSensitivity, differenceRegions } from "./comparison";
 import { Browser, compareImages } from "./helper";
 
 test("balanced pixel comparison ignores low-intensity noise and preserves exact diagnostics", () => {
@@ -29,6 +29,23 @@ test("threshold boundary and invalid evidence fail predictably", () => {
   expect(() => comparePixelBuffers([1], [1], 16)).toThrow();
   expect(() => comparePixelBuffers([NaN, 0, 0, 255], [0, 0, 0, 255], 16)).toThrow();
   expect(() => comparePixelBuffers([], [], 255)).toThrow();
+});
+
+test("region highlights group displaced edges without erasing thin borders", () => {
+  const source = new Uint8Array(32 * 24 * 4).fill(255), canvas = source.slice();
+  for (let y = 2; y < 20; y++) {
+    source.set([0, 0, 0, 255], (y * 32 + 10) * 4);
+    canvas.set([0, 0, 0, 255], (y * 32 + 12) * 4);
+  }
+  const result = comparePixelBuffers(source, canvas, comparisonSensitivity.pixel_channel_epsilon);
+  expect(result.different_pixels).toBe(36);
+  expect(differenceRegions(result.mask, source, canvas, 32)).toEqual([{ x: 8, y: 0, width: 8, height: 24, kind: "changed" }]);
+  expect(() => differenceRegions(result.mask, source, canvas, 0)).toThrow();
+});
+
+test("new threshold removes faint residuals but retains a missing border", () => {
+  expect(comparePixelBuffers([255,255,255,255], [232,232,232,255], comparisonSensitivity.pixel_channel_epsilon).different_pixels).toBe(0);
+  expect(comparePixelBuffers([211,218,215,255], [255,255,255,255], comparisonSensitivity.pixel_channel_epsilon).different_pixels).toBe(1);
 });
 
 test("host image comparison applies sensitivity while mismatched image sizes cannot pass", async () => {

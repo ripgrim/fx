@@ -15,6 +15,25 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("Paper comparison requests a native PNG export and rejects disguised JPEG", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fx-paper-png-"));
+    const path = join(root, "board.png");
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jMZkAAAAASUVORK5CYII=", "base64");
+    await writeFile(path, png);
+    const read = spyOn(PaperReader.prototype, "read").mockImplementation(async (name, args) => {
+      if (name === "export") {
+        expect(args).toEqual({ type: "image", nodes: { board: [{ format: "png", scale: "1x" }] }, fileId: "file" });
+        return { content: [{ type: "text", text: JSON.stringify({ exports: [{ nodeId: "board", filePath: path }] }) }] };
+      }
+      expect(["get_node_info", "get_jsx"]).toContain(name);
+      return {};
+    });
+    try {
+      expect((await new PaperReader().snapshot("board", "file")).image).toBe(`data:image/png;base64,${png.toString("base64")}`);
+      await writeFile(path, Buffer.from([255, 216, 255, 224]));
+      await expect(new PaperReader().snapshot("board", "file")).rejects.toThrow("not PNG");
+    } finally { read.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  });
   test("diff parameters accept explicit source, node, selector, and page state", () => {
     expect(parseDiffParameters('node:board http://localhost:3000/demo --selector "main > section" --session-storage \'{"owned":"true"}\' --height 1000')).toEqual({ target: "node:board", url: "http://localhost:3000/demo", selector: "main > section", session_storage: { owned: "true" }, height: 1000 });
     expect(() => parseDiffParameters('--height nope')).toThrow("Viewport");

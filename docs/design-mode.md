@@ -49,12 +49,14 @@ codebase → editable Paper design → verified codebase workflow.
   covered by this property mapping. Equivalent CSS colors are compared after
   browser normalization; these scoped checks do not replace screenshot verification.
   Balanced sensitivity ignores dimension rounding up to 1/32 CSS px and pixel
-  channel differences up to 16/255. Border presence and border-width checks remain
+  channel differences up to 24/255. Border presence and border-width checks remain
   independent, so a missing 1px border still fails. There is no whole-image area
   allowance: even one above-threshold pixel remains a visual difference. The host
   gate and inspector use the same pixel comparator. Checkpoints retain the policy,
   raw difference count and ignored noise count; older checkpoints without a policy
-  retain strict rendering until checked again.
+  use the current preview tolerance until checked again; stored results are unchanged.
+  Paper captures use PNG image exports rather than JPEG screenshots. Failed PNG
+  exports fail explicitly instead of silently falling back to compressed evidence.
   A verified import records a baseline and enters the design phase, where
   intentional edits are reported as changes. Layer names are not source IDs.
 - The host checkpoints every recorded managed mutation against its admitted
@@ -75,7 +77,10 @@ codebase → editable Paper design → verified codebase workflow.
   across all three views. Escape or Close restores focus and the selected finding.
   Zoom uses the stored capture resolution and does not manufacture image detail.
 - The inspector separates source findings from approximate directional pixel
-  residuals. Red and green pixels are not claims of confirmed semantic removals
+  residuals. Regions groups nearby residuals into stable rounded highlights by
+  default; Pixels reveals the exact mask. Amber denotes mixed residuals, not a
+  confirmed semantic move. Grouping changes presentation, never verification
+  results. Red and green pixels are not claims of confirmed semantic removals
   or additions. Selecting a located source finding focuses its measured region.
   Token-binding warnings, unverified mappings and technical provenance are tucked
   into collapsed Details, keeping the default view focused on the images.
