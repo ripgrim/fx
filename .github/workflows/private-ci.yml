@@ -1,0 +1,34 @@
+name: Dispatch private Linux CI
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Owner PR number
+        required: true
+permissions:
+  contents: read
+jobs:
+  dispatch:
+    if: github.repository == 'ripgrim/fx'
+    runs-on: ubuntu-24.04
+    steps:
+      # Never check out PR code in this privileged workflow.
+      - uses: actions/github-script@v7
+        env:
+          INPUT_PR: ${{ inputs.pr }}
+        with:
+          github-token: ${{ secrets.FX_CI_DISPATCH_TOKEN }}
+          script: |
+            const number = context.payload.pull_request?.number ?? Number(process.env.INPUT_PR);
+            if (!Number.isSafeInteger(number) || number <= 0) throw Error('Invalid PR');
+            if (context.eventName === 'workflow_dispatch' && context.actor !== 'ripgrim') throw Error('Owner dispatch required');
+            const {data: pr} = await github.rest.pulls.get({owner:'ripgrim',repo:'fx',pull_number:number});
+            if (pr.state !== 'open' || pr.user.login !== 'ripgrim' || pr.head.repo?.full_name !== 'ripgrim/fx') {
+              core.info('Not an eligible owner PR; GitHub-hosted CI remains responsible.');
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(pr.head.sha)) throw Error('Invalid commit');
+            await github.rest.actions.createWorkflowDispatch({owner:'ripgrim',repo:'fx-ci',workflow_id:'local-ci.yml',ref:'main',inputs:{pr:String(number),expected_sha:pr.head.sha,suite:'full'}});
+            core.info(`Dispatched private Linux CI for PR ${number} at ${pr.head.sha}`);

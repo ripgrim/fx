@@ -1,5 +1,22 @@
 # ripgrim/fx releases
 
+## Optional private PR checks
+
+`private-ci.yml` dispatches owner-authored, same-repository PR commits to the
+private `ripgrim/fx-ci` repository. Its `pull_request_target` job never checks
+out or executes PR code. `FX_CI_DISPATCH_TOKEN` needs Actions read/write on
+`fx-ci` only. The private workflow independently validates the author and SHA,
+and uses its separate `FX_STATUS_TOKEN` to post `Private Linux CI` on that SHA.
+The status token is used only by GitHub-hosted reporting jobs, not local tests.
+
+After the dispatcher is merged and an end-to-end run is verified, set public
+repository variable `PRIVATE_CI_ENABLED=true` to skip duplicate hosted Full CI
+build/test jobs for those owner PRs. Leave it unset to retain hosted checks.
+Other authors, fork branches, manual Full CI, main CI and release qualification
+stay on GitHub-hosted runners. Binary Size stays hosted. Private results do not
+replace the exact-main-commit release gate. Disable the private discovery timer
+after event dispatch is active; manual dispatch remains available for retries.
+
 This fork defaults to Linux x86_64 CI and release binaries. Native Linux/macOS
 test matrices remain available through manual Full CI dispatch. Upstream remains
 available through the `upstream` Git remote. `origin` is `ripgrim/fx`.

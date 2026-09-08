@@ -26,8 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: python3 -m unittest discover -s scripts -p fork_release_gate_test.py
+      - run: python3 -m unittest scripts.tests.test_private_ci
 
   build:
+    if: ${{ !(vars.PRIVATE_CI_ENABLED == 'true' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'ripgrim' && github.event.pull_request.head.repo.full_name == 'ripgrim/fx') }}
     name: Build (${{ matrix.optimize }}, ${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
@@ -81,6 +83,7 @@ jobs:
           retention-days: 1
 
   native:
+    if: ${{ !(vars.PRIVATE_CI_ENABLED == 'true' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'ripgrim' && github.event.pull_request.head.repo.full_name == 'ripgrim/fx') }}
     name: Native checks (${{ matrix.optimize }}, ${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
@@ -262,7 +265,7 @@ jobs:
 
   full-suite:
     name: Full suite (${{ matrix.name }})
-    if: ${{ always() }}
+    if: ${{ always() && !(vars.PRIVATE_CI_ENABLED == 'true' && github.event_name == 'pull_request' && github.event.pull_request.user.login == 'ripgrim' && github.event.pull_request.head.repo.full_name == 'ripgrim/fx') }}
     needs:
       - build
       - native
