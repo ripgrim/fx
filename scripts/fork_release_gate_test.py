@@ -67,12 +67,22 @@ class GateTests(unittest.TestCase):
         workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
         full = (workflows / "full-ci.yml").read_text()
         choices = re.findall(r"fromJSON\(inputs.all_platforms == true && '([^']+)' \|\| '([^']+)'\)", full)
-        self.assertEqual(len(choices), 3)
+        self.assertEqual(len(choices), 4)
         for expanded, default in choices:
             names = lambda value: [item["name"] if isinstance(item, dict) else item for item in json.loads(value)]
             self.assertEqual(names(default), list(PLATFORMS))
             self.assertEqual(names(expanded), ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"])
         self.assertIn("  pull_request:\n", full)
+        self.assertIn("github.head_ref || github.ref_name", full)
+        e2e = full.split("  e2e:\n", 1)[1].split("  full-suite:\n", 1)[0]
+        self.assertIn("needs: build", e2e)
+        self.assertNotIn("zig build", e2e)
+        self.assertIn("actions/download-artifact@v4", e2e)
+        self.assertIn("--retry 1", e2e)
+        self.assertEqual(e2e.count('bun test --max-concurrency'), 1)
+        self.assertIn("e2e-timings.tsv", e2e)
+        self.assertEqual(full.count("name: fx-ci-${{ matrix.platform.name }}-${{ matrix.optimize }}-${{ github.sha }}"), 2)
+        self.assertIn('"Build (ReleaseSafe, " + $target + ")",', full)
         release = (workflows / "release.yml").read_text()
         self.assertEqual(re.findall(r"            target: (.+)", release), ["x86_64-linux"])
         self.assertIn("needs: [check-version, build-linux]", release)

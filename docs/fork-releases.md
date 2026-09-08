@@ -12,6 +12,12 @@ manual-only. Full CI also runs on pushes to `main`, or manually on a selected
 feature branch. Set `all_platforms: true` on manual Full CI dispatch to include
 Linux ARM64 and both macOS architectures. Wait for exact-commit evidence before
 declaring a PR ready. Normal runs retain the native tests and all four Linux E2E shards.
+Use the automatic PR run as evidence; do not also dispatch the same commit manually.
+PR and manual runs share a concurrency group per branch and platform selection.
+Each platform builds and smoke-tests one exact-commit binary for its E2E shards;
+unit tests run in parallel. Bun retries failed tests once rather than rerunning
+successful tests in the same file. Timing artifacts record file, seconds, and
+exit status for later shard balancing.
 Bug-report issue templates are unchanged.
 
 Prepare Release remains manual. Release still requires successful main-branch
