@@ -35,7 +35,7 @@ pub const InteractionMode = enum {
 };
 
 pub const yolo_warning_text = permissions.yolo_warning_text;
-pub const yolo_warning_compact_text = "YOLO: unrestricted";
+pub const yolo_warning_compact_text = "Full access";
 const yolo_warning_visible_ms: i64 = 4000;
 
 pub fn monotonicMillis() i64 {
@@ -317,7 +317,7 @@ pub fn Runtime(comptime App: type) type {
                     );
                     session_commands.reportUserSettingsFailure(
                         app,
-                        "yolo-acknowledgment",
+                        "full-access-acknowledgment",
                         failure.err,
                         failure.cleanup,
                         true,

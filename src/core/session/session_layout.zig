@@ -4,6 +4,8 @@ const io_mod = @import("../shared/io.zig");
 const Allocator = std.mem.Allocator;
 const session_id_random_bytes: usize = 9;
 const session_id_encoded_bytes = std.base64.url_safe_no_pad.Encoder.calcSize(session_id_random_bytes);
+const terminal_session_id_prefix = "shell-";
+const terminal_session_id_random_bytes: usize = 16;
 
 pub fn sessionDirPath(alloc: Allocator, sessions_dir: []const u8, session_id: []const u8) ![]u8 {
     try validateSessionId(session_id);
@@ -31,6 +33,19 @@ pub fn generateSessionId(alloc: Allocator) ![]u8 {
     return id;
 }
 
+pub fn generateTerminalSessionId(alloc: Allocator) ![]u8 {
+    var random_bytes: [terminal_session_id_random_bytes]u8 = undefined;
+    io_mod.getIo().random(&random_bytes);
+    const encoded_len = std.base64.url_safe_no_pad.Encoder.calcSize(random_bytes.len);
+    const id = try alloc.alloc(u8, terminal_session_id_prefix.len + encoded_len);
+    @memcpy(id[0..terminal_session_id_prefix.len], terminal_session_id_prefix);
+    _ = std.base64.url_safe_no_pad.Encoder.encode(
+        id[terminal_session_id_prefix.len..],
+        &random_bytes,
+    );
+    return id;
+}
+
 test "generated session id is a compact url-safe token" {
     const id = try generateSessionId(std.testing.allocator);
     defer std.testing.allocator.free(id);
@@ -42,6 +57,15 @@ test "generated session id is a compact url-safe token" {
     }
 
     try validateSessionId("1786460757753-1786460757753277000-ef75d8fd94fdab1");
+}
+
+test "generated terminal session id is compact and path safe" {
+    const id = try generateTerminalSessionId(std.testing.allocator);
+    defer std.testing.allocator.free(id);
+
+    try std.testing.expectEqual(terminal_session_id_prefix.len + 22, id.len);
+    try std.testing.expect(std.mem.startsWith(u8, id, terminal_session_id_prefix));
+    try validateSessionId(id);
 }
 
 test "session directory path rejects unsafe ids" {
