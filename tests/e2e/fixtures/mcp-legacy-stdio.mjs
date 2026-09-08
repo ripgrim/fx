@@ -359,6 +359,10 @@ function handle(message) {
     return;
   }
   if (message.method === "tools/call") {
+    if (process.env.FX_MCP_DIFF_DELAY_MS && !message.fixtureDelayed) {
+      setTimeout(() => handle({ ...message, fixtureDelayed: true }), Number(process.env.FX_MCP_DIFF_DELAY_MS));
+      return;
+    }
     const progressToken = message.params?._meta?.progressToken;
     if (currentToolName !== "design_diff" && !Number.isInteger(progressToken)) process.exit(4);
     if (mode === "direct_form") {

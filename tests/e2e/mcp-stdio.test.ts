@@ -62,6 +62,7 @@ for (const denied of [false, true]) test.skipIf(!tmuxAvailable())("diff command 
   const server = JSON.parse(readFileSync(configPath, "utf8")).mcp.fixture;
   server.environment.FX_MCP_INITIAL_TOOL_NAME = "design_diff";
   server.environment.FX_MCP_RAW_RESULT = "1";
+  server.environment.FX_MCP_DIFF_DELAY_MS = "3000";
   server.environment.FX_MCP_RESULT_TEXT = JSON.stringify({ status: "ready", url: "http://127.0.0.1:12345/test/view" });
   writeFileSync(configPath, JSON.stringify({ mcp: { fx: server } }));
   if (denied) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission: { mcp_fx_design_diff: "deny" } }));
@@ -73,14 +74,27 @@ for (const denied of [false, true]) test.skipIf(!tmuxAvailable())("diff command 
   await tui.waitForText("Session started.");
   const count = gateway.requests.length;
   await tui.sendText("/diff node:artboard");
+  if (!denied) {
+    await tui.waitForText("Comparing", 1500);
+    await tui.sendLiteralText("still typing");
+    await tui.waitForText("still typing", 1000);
+    expect(await tui.capturePane()).not.toContain("Open viewer");
+  }
   try { await tui.waitForText(denied ? "restricted" : "Open viewer", 15000); }
   catch (error) { throw new Error(String(error) + "\n" + readFileSync(stderrPath, "utf8")); }
   expect(gateway.requests.length).toBe(count);
   if (!denied) {
+    expect(await tui.capturePane()).toContain("still typing");
+    expect(await tui.capturePane()).not.toContain("Comparing");
     expect(await tui.capturePane()).toContain("Diff ready");
     expect(await tui.capturePaneEscapes()).toContain("http://127.0.0.1:12345/test/view");
   } else expect(await tui.capturePane()).not.toContain("Open viewer");
   expect(readFileSync(stderrPath, "utf8")).toBe("");
+  if (!denied) {
+    await tui.sendKeys("C-u");
+    await tui.sendText("/diff node:artboard");
+    await tui.waitForText("Comparing", 1500);
+  }
   await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
   expect(await tui.waitForSessionEnd()).toBe(true);
   expect(tui.paneStatus().status).toBe(0);

@@ -124,6 +124,8 @@ Use `/diff` to compare a linked Paper artboard against its saved capture without
 
 Imports are found across sessions in the current workspace; their evidence stays in the original session. Captures made before page-state verification require recapturing before comparison.
 
+Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.
+
 ## Embed fx
 
 fx builds as a native binary or WebAssembly. Applications embedding fx can provide network transport, session storage, configuration, permission handling, and terminal I/O.

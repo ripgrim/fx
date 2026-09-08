@@ -773,6 +773,7 @@ pub fn Runtime(comptime App: type) type {
                 else
                     .{},
                 .upgrade_status = upgrade_label,
+                .design_diff_loading = if (comptime @hasField(App, "design_diff")) if (app.design_diff.job != null) ([4][]const u8{ "| Comparing", "/ Comparing", "- Comparing", "\\ Comparing" })[@as(usize, @intCast(@max(io_mod.milliTimestamp(), 0))) / 150 % 4] else "" else "",
                 .design_diff_ready = if (comptime @hasField(App, "shell")) @import("../design/managed_helper.zig").latest_inspector_url(app.shell.entries.items) != null else false,
                 .danger_status = if (yolo_warning_active)
                     app_permission_runtime.yolo_warning_text

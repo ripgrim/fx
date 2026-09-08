@@ -488,6 +488,8 @@ pub fn composeHintRow(
         ""
     else if (danger_text.len > 0)
         danger_text
+    else if (ctx.design_diff_loading.len > 0)
+        ctx.design_diff_loading
     else if (ctx.design_diff_ready and !approval_active and !ctx.auth_picker.active and !ctx.subagent_view_active)
         "Diff ready · ctrl+d to open"
     else
@@ -1889,6 +1891,12 @@ test "design diff shortcut hint appears beside model only when ready" {
     var ready = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
     defer ready.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, ready.items, "Diff ready · ctrl+d to open") != null);
+    ctx.design_diff_loading = "| Comparing";
+    var loading = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    defer loading.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.find(u8, loading.items, "| Comparing") != null);
+    try std.testing.expect(std.mem.find(u8, loading.items, "Diff ready") == null);
+    ctx.design_diff_loading = "";
     ctx.design_diff_ready = false;
     var pending = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
     defer pending.deinit(std.testing.allocator);

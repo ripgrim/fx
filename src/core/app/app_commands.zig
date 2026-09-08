@@ -391,6 +391,7 @@ pub fn Handlers(comptime App: type) type {
         }
 
         pub fn collectMcpReloadFacts(app: *App) !void {
+            if (comptime @hasField(App, "design_diff")) try @import("../design/diff_command.zig").collect(app, app_session_runtime.Runtime(App).activeSessionId(app));
             if (comptime !@hasDecl(App, "takeMcpReloadCompletion")) return;
             var completion = (try app.takeMcpReloadCompletion()) orelse return;
             defer completion.deinit(app.alloc);
@@ -1298,7 +1299,7 @@ pub fn Handlers(comptime App: type) type {
 
         fn commandHandleDiff(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
-            if (comptime !@hasDecl(App, "acquireMcpRuntime") or !@hasField(App, "permission_engine")) return error.McpRuntimeUnavailable;
+            if (comptime !@hasDecl(App, "acquireMcpRuntime") or !@hasField(App, "permission_engine") or !@hasField(App, "design_diff")) return error.McpRuntimeUnavailable;
             @import("../design/diff_command.zig").run(app, rest, app_session_runtime.Runtime(App).activeSessionId(app)) catch {
                 try app.writeDomainNotice(.{ .topic = "diff", .tone = .warning, .body = "Comparison unavailable. Check the capture and MCP connection." }, true);
             };

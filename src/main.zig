@@ -585,6 +585,7 @@ const App = struct {
     subagents: ui_subagents.Controller = .{},
     change_tracker: change_tracker_mod.ChangeTracker = .{},
     mcp: app_mcp_runtime.State = .{},
+    design_diff: @import("core/design/diff_command.zig").State = .{},
     skills: skill_runtime.Runtime = .{},
     context_snapshot: context_contract.GatheredContextSnapshot = .{},
     file_index: file_index_mod.FileIndex = .{},
@@ -837,6 +838,7 @@ const App = struct {
 
     /// Returns an owned handoff only after all interactive state is torn down.
     pub fn deinitWithResumeHandoff(self: *App) ?app_session_runtime.ResumeHandoff {
+        self.design_diff.deinit();
         return self.deinitImpl(true);
     }
 
