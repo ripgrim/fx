@@ -374,7 +374,7 @@ export async function compareImages(source: string, canvas: string) {
       const width = Math.max(a.width, b.width), height = Math.max(a.height, b.height);
       if (width * height > 32000000) throw new Error('Image comparison exceeds pixel limit');
       const pixels = image => { const c = document.createElement('canvas'); c.width = width; c.height = height; const ctx = c.getContext('2d'); ctx.drawImage(image, 0, 0); return ctx.getImageData(0, 0, width, height).data; };
-      const {mask, ...comparison} = (${comparePixelBuffers.toString()})(pixels(a), pixels(b), ${comparisonSensitivity.pixel_channel_epsilon});
+      const {mask, ...comparison} = (${comparePixelBuffers.toString()})(pixels(a), pixels(b), ${comparisonSensitivity.pixel_channel_epsilon}, a.width);
       return { ...comparison, sensitivity: ${JSON.stringify(comparisonSensitivity)}, total_pixels: width * height, dimensions_match: a.width === b.width && a.height === b.height, match: comparison.different_pixels === 0 && a.width === b.width && a.height === b.height };
     })()`);
   } finally { await browser.call("close").catch(() => undefined); }

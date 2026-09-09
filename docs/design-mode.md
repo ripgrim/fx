@@ -55,6 +55,9 @@ codebase → editable Paper design → verified codebase workflow.
   gate and inspector use the same pixel comparator. Checkpoints retain the policy,
   raw difference count and ignored noise count; older checkpoints without a policy
   use the current preview tolerance until checked again; stored results are unchanged.
+  Anti-alias filtering suppresses only intermediate edge shades between unchanged
+  neighboring color anchors. Solid strokes, alpha changes, and missing borders
+  remain differences. Stored policies preserve earlier comparison behavior.
   Paper captures use PNG image exports rather than JPEG screenshots. Failed PNG
   exports fail explicitly instead of silently falling back to compressed evidence.
   A verified import records a baseline and enters the design phase, where
@@ -77,8 +80,9 @@ codebase → editable Paper design → verified codebase workflow.
   across all three views. Escape or Close restores focus and the selected finding.
   Zoom uses the stored capture resolution and does not manufacture image detail.
 - The inspector separates source findings from approximate directional pixel
-  residuals. Regions groups nearby residuals into stable rounded highlights by
-  default; Pixels reveals the exact mask. Amber denotes mixed residuals, not a
+  residuals. Regions follows differences with fine 2px tiles and smoothed overlay
+  edges, leaving hollow interiors clear rather than filling bounding boxes.
+  Pixels reveals the comparison mask. Amber denotes mixed residuals, not a
   confirmed semantic move. Grouping changes presentation, never verification
   results. Red and green pixels are not claims of confirmed semantic removals
   or additions. Selecting a located source finding focuses its measured region.

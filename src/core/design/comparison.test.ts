@@ -39,8 +39,49 @@ test("region highlights group displaced edges without erasing thin borders", () 
   }
   const result = comparePixelBuffers(source, canvas, comparisonSensitivity.pixel_channel_epsilon);
   expect(result.different_pixels).toBe(36);
-  expect(differenceRegions(result.mask, source, canvas, 32)).toEqual([{ x: 8, y: 0, width: 8, height: 24, kind: "changed" }]);
+  const regions = differenceRegions(result.mask, source, canvas, 32);
+  expect(regions).toHaveLength(9);
+  expect(regions[0]).toEqual({ x: 10, y: 2, width: 4, height: 2, kind: "changed" });
   expect(() => differenceRegions(result.mask, source, canvas, 0)).toThrow();
+});
+
+test("antialias filtering preserves geometry and only removes shared edge shades", () => {
+  const source = new Uint8Array(5 * 5 * 4).fill(255);
+  for (let y = 0; y < 5; y++) {
+    source.set([0,0,0,255], (y * 5 + 1) * 4);
+    source.set([100,100,100,255], (y * 5 + 2) * 4);
+  }
+  const canvas = source.slice();
+  for (let y = 0; y < 5; y++) canvas.set([150,150,150,255], (y * 5 + 2) * 4);
+  expect(comparePixelBuffers(source, canvas, 24).different_pixels).toBe(5);
+  expect(comparePixelBuffers(source, canvas, 24, 5).antialiased_pixels).toBe(5);
+  canvas.set([150,180,150,255], 2 * 4);
+  expect(comparePixelBuffers(source, canvas, 24, 5).mask[2]).toBe(1);
+  canvas.set([150,150,150,180], 2 * 4);
+  expect(comparePixelBuffers(source, canvas, 24, 5).mask[2]).toBe(1);
+  for (let y = 0; y < 5; y++) canvas.set([255,255,255,255], (y * 5 + 1) * 4);
+  expect(comparePixelBuffers(source, canvas, 24, 5).different_pixels).toBeGreaterThanOrEqual(5);
+  expect(() => comparePixelBuffers(source, canvas, 24, 3)).toThrow();
+});
+
+test("antialias filtering does not erase a one-pixel stroke shift", () => {
+  const source = new Uint8Array(8 * 8 * 4).fill(255), canvas = source.slice();
+  for (let y = 0; y < 8; y++) {
+    source.set([0,0,0,255], (y * 8 + 2) * 4);
+    canvas.set([0,0,0,255], (y * 8 + 3) * 4);
+  }
+  const result = comparePixelBuffers(source, canvas, 24, 8);
+  expect(result.different_pixels).toBe(16);
+  expect(result.antialiased_pixels).toBe(0);
+});
+
+test("fine regions leave hollow shapes and neighboring whitespace clear", () => {
+  const source = new Uint8Array(32 * 32 * 4).fill(255), canvas = source.slice();
+  for (let y = 2; y < 30; y++) for (let x = 2; x < 30; x++) if (x === 2 || x === 29 || y === 2 || y === 29) source.set([0,0,0,255], (y * 32 + x) * 4);
+  const result = comparePixelBuffers(source, canvas, 24, 32);
+  const regions = differenceRegions(result.mask, source, canvas, 32);
+  expect(regions.some(r => r.x <= 16 && r.x + r.width > 16 && r.y <= 16 && r.y + r.height > 16)).toBe(false);
+  expect(result.different_pixels).toBe(108);
 });
 
 test("new threshold removes faint residuals but retains a missing border", () => {

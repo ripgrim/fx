@@ -1,18 +1,20 @@
 /** One sensitivity contract for host verification and the inspector overlay.
- * No area allowance or neighbor matching: small missing details still count.
+ * No area allowance or shifted-pixel matching: small missing details still count.
  */
 export const comparisonSensitivity = Object.freeze({
-  version: 2,
+  version: 3,
   name: "balanced",
   dimension_epsilon_px: 1 / 32,
   pixel_channel_epsilon: 24,
+  antialias: true,
 });
 
 /** Dependency-free so the same implementation can run in capture and inspector
  * browsers. The mask uses one byte per pixel. Callers own its lifetime.
  */
-export function comparePixelBuffers(source: ArrayLike<number>, canvas: ArrayLike<number>, channel_epsilon: number) {
+export function comparePixelBuffers(source: ArrayLike<number>, canvas: ArrayLike<number>, channel_epsilon: number, width?: number) {
   if (source.length !== canvas.length || source.length % 4 || !Number.isInteger(channel_epsilon) || channel_epsilon < 0 || channel_epsilon > 32) throw new Error("Invalid pixel comparison inputs");
+  if (width !== undefined && (!Number.isInteger(width) || width <= 0 || source.length / 4 % width)) throw new Error("Invalid comparison width");
   const mask = new Uint8Array(source.length / 4);
   let different_pixels = 0, raw_different_pixels = 0;
   for (let offset = 0; offset < source.length; offset += 4) {
@@ -25,24 +27,55 @@ export function comparePixelBuffers(source: ArrayLike<number>, canvas: ArrayLike
     if (delta > 0) raw_different_pixels++;
     if (delta > channel_epsilon) { mask[offset / 4] = 1; different_pixels++; }
   }
-  return { mask, different_pixels, raw_different_pixels, ignored_pixels: raw_different_pixels - different_pixels };
+  // Only suppress intermediate edge shades between two unchanged local anchors.
+  // Never search for a shifted matching pixel: moved strokes and missing borders
+  // must survive. Alpha changes also remain evidence.
+  let antialiased_pixels = 0;
+  if (width) {
+    const height = mask.length / width;
+    const blend = (image: ArrayLike<number>, i: number, lo: number, hi: number) => {
+      let dot = 0, length = 0;
+      for (let c = 0; c < 3; c++) { const d = source[hi + c]! - source[lo + c]!; dot += (image[i + c]! - source[lo + c]!) * d; length += d * d; }
+      if (length < 3 * 64 * 64) return false;
+      const t = dot / length;
+      if (t <= .08 || t >= .92) return false;
+      for (let c = 0; c < 3; c++) if (Math.abs(image[i + c]! - (source[lo + c]! + t * (source[hi + c]! - source[lo + c]!))) > 3) return false;
+      return true;
+    };
+    for (let p = 0; p < mask.length; p++) {
+      if (!mask[p]) continue;
+      const i = p * 4, x = p % width, y = Math.floor(p / width);
+      if (source[i + 3] !== 255 || canvas[i + 3] !== 255) continue;
+      let lo = -1, hi = -1, minimum = Infinity, maximum = -Infinity;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if ((!dx && !dy) || x + dx < 0 || x + dx >= width || y + dy < 0 || y + dy >= height) continue;
+        const n = ((y + dy) * width + x + dx) * 4;
+        if (source[n + 3] !== 255 || canvas[n + 3] !== 255) continue;
+        if ([0, 1, 2].some(c => Math.abs(source[n + c]! - canvas[n + c]!) > 3)) continue;
+        const luminance = source[n]! + source[n + 1]! + source[n + 2]!;
+        if (luminance < minimum) { minimum = luminance; lo = n; }
+        if (luminance > maximum) { maximum = luminance; hi = n; }
+      }
+      if (lo >= 0 && hi >= 0 && blend(source, i, lo, hi) && blend(canvas, i, lo, hi)) { mask[p] = 0; different_pixels--; antialiased_pixels++; }
+    }
+  }
+  return { mask, different_pixels, raw_different_pixels, antialiased_pixels, ignored_pixels: raw_different_pixels - different_pixels };
 }
 
-/** Presentation only: connected tiles turn jagged pixel edges into stable regions.
+/** Presentation only: fine connected tiles preserve the shape of differences.
  * The underlying pixel mask and verification result are never altered. */
 export function differenceRegions(mask: ArrayLike<number>, source: ArrayLike<number>, canvas: ArrayLike<number>, width: number) {
   if (!Number.isInteger(width) || width <= 0 || mask.length % width || source.length !== mask.length * 4 || canvas.length !== source.length) throw new Error("Invalid region inputs");
-  const size = 8, columns = Math.ceil(width / size), height = mask.length / width;
+  const size = 2, columns = Math.ceil(width / size), height = mask.length / width;
   const rows = Math.ceil(height / size), cells = new Uint8Array(columns * rows);
   for (let p = 0; p < mask.length; p++) if (mask[p]) cells[Math.floor(p / width / size) * columns + Math.floor(p % width / size)] = 1;
   const regions: { x: number; y: number; width: number; height: number; kind: string }[] = [];
   for (let cell = 0; cell < cells.length; cell++) {
     if (cells[cell] !== 1) continue;
     const queue = [cell]; cells[cell] = 2;
-    let left = columns, top = rows, right = 0, bottom = 0, removed = 0, added = 0;
+    let removed = 0, added = 0;
     for (let cursor = 0; cursor < queue.length; cursor++) {
       const index = queue[cursor]!, cx = index % columns, cy = Math.floor(index / columns);
-      left = Math.min(left, cx); top = Math.min(top, cy); right = Math.max(right, cx + 1); bottom = Math.max(bottom, cy + 1);
       for (let y = cy * size; y < Math.min(height, (cy + 1) * size); y++) for (let x = cx * size; x < Math.min(width, (cx + 1) * size); x++) {
         const p = y * width + x, i = p * 4;
         if (!mask[p]) continue;
@@ -53,7 +86,16 @@ export function differenceRegions(mask: ArrayLike<number>, source: ArrayLike<num
         if (nx >= 0 && nx < columns && ny >= 0 && ny < rows && cells[next] === 1) { cells[next] = 2; queue.push(next); }
       }
     }
-    regions.push({ x: left * size, y: top * size, width: Math.min(width, right * size) - left * size, height: Math.min(height, bottom * size) - top * size, kind: Math.min(removed, added) > (removed + added) * .2 ? "changed" : removed > added ? "source" : "paper" });
+    // Preserve the footprint, including hollow interiors, instead of filling its
+    // bounding box. Coalesce horizontal tile runs for bounded drawing work.
+    const kind = Math.min(removed, added) > (removed + added) * .2 ? "changed" : removed > added ? "source" : "paper";
+    queue.sort((a, b) => a - b);
+    for (let q = 0; q < queue.length;) {
+      const start = queue[q++]!, row = Math.floor(start / columns); let end = start;
+      while (q < queue.length && queue[q] === end + 1 && Math.floor(queue[q]! / columns) === row) end = queue[q++]!;
+      const x = start % columns * size, y = row * size;
+      regions.push({ x, y, width: Math.min(width, (end % columns + 1) * size) - x, height: Math.min(size, height - y), kind });
+    }
   }
   return regions;
 }
