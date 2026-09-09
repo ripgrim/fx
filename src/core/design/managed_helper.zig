@@ -7,6 +7,17 @@ const inspector_source = @embedFile("inspector.ts");
 const property_source = @embedFile("property_diff.ts");
 const comparison_source = @embedFile("comparison.ts");
 
+/// Refresh only our recognized launcher before MCP starts it. Custom servers stay untouched.
+pub fn refreshConfigured(alloc: std.mem.Allocator, config: @import("../mcp/mcp_contract.zig").McpServerConfig) !void {
+    if (!config.enabled or config.transport != .stdio or !std.mem.eql(u8, config.name, "fx_design")) return;
+    const home = io_mod.getenv("HOME") orelse io_mod.getenv("USERPROFILE") orelse return;
+    const launcher = try std.fs.path.join(alloc, &.{ home, ".fx", "helpers", "design", "v1.ts" });
+    defer alloc.free(launcher);
+    if (config.args.len == 0 or !std.mem.eql(u8, config.args[config.args.len - 1], launcher)) return;
+    const installed = try ensureInstalled(alloc);
+    alloc.free(installed);
+}
+
 /// Prefer a native Bun install to Windows shims inherited through WSL's PATH.
 /// Caller owns the returned executable path.
 pub fn runtimeExecutable(alloc: std.mem.Allocator) ![]u8 {

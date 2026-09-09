@@ -5,6 +5,13 @@ codebase → editable Paper design → verified codebase workflow.
 
 ## Implemented foundation
 
+- New compositions use `prepare_design` with HTML grounded in existing repository
+  files, a Paper file ID, and dimensions. Prepared writes still require host
+  admission and are scoped to the new artboard. Unlike faithful imports, a
+  redesign does not need to match the old screen first. Its checkpoint records
+  intentional changes, not proof of component fidelity; use component visual
+  diffs against rendered examples to evaluate that separately.
+
 - Design-mode entry materializes a bundled, content-addressed helper and registers
   `fx_design` alongside the existing Paper MCP. A stable launcher selects the
   helper version bundled with the binary. Existing named configurations are not

@@ -167,6 +167,8 @@ Verification uses lossless Paper PNG exports. Pixel comparison preserves every c
 
 Inside a saved session, `/permissions remember <allow|deny> <tool-name> <arguments-json>` stores an exact confirmed rule without running the action. `/permissions` lists stable rule IDs, and `/permissions revoke <rule-id>` removes a stored rule even when its original workspace or file state has changed.
 
+New screens and redesigns use repository components, tokens, and assets through `prepare_design`, without importing the old screen first. Their checkpoints record intentional changes, not component fidelity. Component visual diffs remain a separate comparison against rendered examples.
+
 Stateful design captures use an isolated browser with optional explicit storage and a readiness selector. DOM and screenshot consistency checks reject changing captures before import; they do not inherit your open browser tab's state.
 
 Use `/diff node:ID URL` to capture a live page and compare it with Paper, without an import or AI turn. The host returns a clickable viewer link; Ctrl+D opens the latest comparison. Omit `node:ID` to use the current Paper selection. Without a URL, `/diff`, `/diff node:ID`, `/diff capture:ID`, and linked routes resolve existing workspace imports across sessions and capture their source again. Original imports are not modified.

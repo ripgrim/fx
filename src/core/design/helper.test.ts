@@ -15,6 +15,42 @@ const record = (workspace: string): DesignRecord => ({
 });
 
 describe("persistent design workflow", () => {
+  test("composition prepares grounded HTML without an import baseline and keeps writes scoped", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fx-composition-"));
+    const workspace = join(directory, "project");
+    const adapter = new Adapter();
+    const publish = spyOn(adapter, "publish").mockImplementation(async (store, source) => { await store.save(source); return {} as any; });
+    const initialize = spyOn(PaperReader.prototype, "initialize").mockResolvedValue(undefined);
+    const read = spyOn(PaperReader.prototype, "read").mockResolvedValue({ structuredContent: { children: [] } });
+    const snapshot = spyOn(PaperReader.prototype, "snapshot").mockResolvedValue({ nodes: { id: "board" }, jsx: {}, image: "data:image/png;base64,fixture" });
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, "button.tsx"), "export const Button = () => null;");
+      const args = { session_directory: directory, workspace, name: "Compare", file_id: "file", html: '<div>Compare</div>', references: ["button.tsx"], width: 1200, height: 800 };
+      await expect(adapter.call("prepare_design", { ...args, references: ["../missing.tsx"] })).rejects.toThrow("existing inventoried");
+      const prepared = await adapter.call("prepare_design", args);
+      expect(prepared.fidelity_claim).toBe(false);
+      expect(await adapter.call("prepare_design", args)).toMatchObject({ capture_id: prepared.capture_id });
+      const operation = prepared.operations[0];
+      const owner = { session_directory: directory, capture_id: prepared.capture_id, operation_hash: operation.hash };
+      await expect(adapter.call("record_result", { ...owner, result_json: '{"id":"board"}' })).rejects.toThrow("not admitted");
+      expect((await adapter.call("preflight", { session_directory: directory, paperTool: operation.tool, argumentsJson: JSON.stringify(operation.arguments) })).status).toBe("clean");
+      await adapter.call("record_result", { ...owner, result_json: '{"id":"board"}' });
+      const saved = await new Store(join(directory, "design")).load(prepared.capture_id);
+      expect(saved.phase).toBe("design");
+      expect(saved.baseline).toBeUndefined();
+      expect(saved.source_manifest).toBeUndefined();
+      expect(saved.operations[1].arguments.html).toBe(args.html);
+      await expect(validateEditTargets(saved, "mcp_paper_write_html", { fileId: "file", targetNodeId: "foreign" }, new PaperReader())).rejects.toThrow();
+      expect((await adapter.call("preflight", { session_directory: directory, paperTool: saved.operations[1].tool, argumentsJson: JSON.stringify(saved.operations[1].arguments) })).status).toBe("clean");
+      await adapter.call("record_result", { ...owner, operation_hash: saved.operations[1].hash, result_json: '{"id":"content","updates":[{"nodeId":"content","ignoredStyles":["position"]}]}' });
+      const checkpoint = await adapter.call("check", owner);
+      expect(checkpoint).toMatchObject({ status: "clean", phase: "design", fidelity_claim: false, pending_verifications: 0 });
+      expect(checkpoint.findings).toContainEqual({ kind: "paper-style-ignored", nodeId: "content", property: "position", operation_hash: saved.operations[1].hash });
+      expect((await adapter.call("record_result", { ...owner, operation_hash: saved.operations[1].hash, result_json: '{}' })).status).toBe("already-recorded");
+      expect((await new Store(join(directory, "design")).load(prepared.capture_id)).baseline).toBeDefined();
+    } finally { publish.mockRestore(); initialize.mockRestore(); read.mockRestore(); snapshot.mockRestore(); await adapter.close(); await rm(directory, { recursive: true }); }
+  });
   test("Paper comparison requests a native PNG export and rejects disguised JPEG", async () => {
     const root = await mkdtemp(join(tmpdir(), "fx-paper-png-"));
     const path = join(root, "board.png");

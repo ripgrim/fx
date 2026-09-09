@@ -64,6 +64,7 @@ export interface DesignNode {
   children: DesignNode[];
 }
 export interface DesignRecord {
+  composition?: { html: string; references: string[] };
   capture_context?: { policy: number; state_label: string; state_fingerprint: string; ready_selector?: string };
   version: number;
   id: string;
@@ -338,7 +339,7 @@ export async function validateEditTargets(record: DesignRecord, tool: string, ar
     }
   }
   const targets: string[] = [];
-  const scalarKeys = new Set(["nodeId", "parentId", "before", "after", "id"]);
+  const scalarKeys = new Set(["nodeId", "targetNodeId", "parentId", "before", "after", "id"]);
   function visit(value: unknown) {
     if (Array.isArray(value)) { for (const item of value) visit(item); return; }
     if (!value || typeof value !== "object") return;
@@ -639,6 +640,7 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
+  tool("prepare_design", "Start a NEW Paper composition or redesign from repository components, without importing or matching the old screen first. Read actual components, tokens and stories, then supply their repository-relative reference paths and grounded HTML. Execute pending operations normally. This records design intent, never import fidelity.", { session_directory: string, workspace: string, name: string, file_id: string, html: string, references: { type: "array", items: string, minItems: 1 }, width: { type: "integer", minimum: 1, maximum: 8192 }, height: { type: "integer", minimum: 1, maximum: 8192 } }, ["workspace", "name", "file_id", "html", "references", "width", "height"], false),
   tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, use an existing workspace link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
@@ -652,7 +654,7 @@ export const TOOLS = [
   tool("compare", "Read the current Paper artboard and compare it against its baseline. Returns source search candidates and concurrent source edits; does not write code.", { session_directory: string, capture_id: string }, ["capture_id"]),
   tool("check", "Read Paper and check the current workflow phase. Design edits are differences, not import regressions.", { session_directory: string, capture_id: string, nodeId: string, fileId: string }, ["session_directory"]),
   tool("verify", "Verify an imported artboard against its source screenshot, or inspect intentional design changes. Never claims fidelity with unresolved findings.", { session_directory: string, capture_id: string }, ["session_directory", "capture_id"], false),
-  tool("prepare_edit", "Prepare an exact targeted Paper edit after a verified import. Existing source identity and baseline survive intentional changes.", { session_directory: string, capture_id: string, paper_tool: string, arguments: { type: "object" } }, ["session_directory", "capture_id", "paper_tool", "arguments"], false),
+  tool("prepare_edit", "Prepare an exact targeted edit in a new composition or verified import. Compositions also support write_html within their artboard. Existing source identity and baseline survive intentional changes.", { session_directory: string, capture_id: string, paper_tool: string, arguments: { type: "object" } }, ["session_directory", "capture_id", "paper_tool", "arguments"], false),
 ];
 
 export class Adapter {
@@ -722,6 +724,27 @@ export class Adapter {
     const directory = resolve(args.session_directory);
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
+    if (name === "prepare_design") {
+      if (typeof args.name !== "string" || !args.name.trim() || typeof args.file_id !== "string" || !args.file_id.trim()) throw new Error("Provide a design name and Paper file ID");
+      const source = await inventory(args.workspace);
+      if (!Array.isArray(args.references) || !args.references.length || args.references.some((file: unknown) => typeof file !== "string" || !Object.hasOwn(source.files, file))) throw new Error("Design references must name existing inventoried repository files");
+      if (![args.width, args.height].every(value => Number.isInteger(value) && value > 0 && value <= 8192) || args.width * args.height > 32000000) throw new Error("Invalid design dimensions");
+      if (typeof args.html !== "string" || !args.html.trim() || args.html.length > 4 * 1024 * 1024) throw new Error("Provide bounded component-grounded HTML");
+      const id = digest({ workspace: source.root, revision: source.revision, name: args.name, file: args.file_id, html: args.html, references: args.references, width: args.width, height: args.height });
+      const existing = (await store.list()).find(record => record.id === id);
+      if (existing) return { version: VERSION, status: "prepared", capture_id: id, operations: existing.operations, artboard_id: existing.artboard_id, fidelity_claim: false };
+      const operation = { tool: "mcp_paper_create_artboard", arguments: { name: args.name, fileId: args.file_id, styles: { width: `${args.width}px`, height: `${args.height}px` } } };
+      const record: DesignRecord = {
+        version: VERSION, id, workspace: source.root, source_revision: source.revision, source_files: source.files,
+        url: "about:blank", selector: "", viewport: { width: args.width, height: args.height },
+        root: { key: "0", name: args.name, tag: "div", text: "", styles: {}, bindings: {}, children: [], rect: { x: 0, y: 0, width: args.width, height: args.height } },
+        screenshot: "", findings: [], phase: "design", file_id: args.file_id,
+        composition: { html: args.html, references: args.references },
+        operations: [{ ...operation, hash: digest(operation), status: "pending" }],
+      };
+      await store.save(record);
+      return { version: VERSION, status: "prepared", capture_id: id, operations: record.operations, fidelity_claim: false };
+    }
     if (name === "diff") {
       let parameters: Json;
       try { parameters = parseDiffParameters(String(args.target ?? "")); }
@@ -843,7 +866,7 @@ export class Adapter {
         if (record.phase === "import" && record.capture_context?.policy !== 3) throw new Error("Capture predates state-consistency checks; recapture before importing");
         const source = await inventory(record.workspace);
         if (source.revision !== record.source_revision) throw new Error("Source changed since capture; recapture before importing");
-        if (record.phase === "design") {
+        if (record.phase === "design" && !(record.composition && !record.artboard_id && operation.tool === "mcp_paper_create_artboard")) {
           const paper = new PaperReader();
           await paper.initialize();
           await validateEditTargets(record, operation.tool, operation.arguments, paper);
@@ -892,12 +915,13 @@ export class Adapter {
       const outstanding = async () => (await store.list()).filter(item => item.operations.some(operation => operation.status !== "applied") || item.operations.filter(operation => operation.status === "applied").length > (item.verified_operations ?? 0)).length;
       if (record.phase === "design") {
         {
+          record.baseline ??= { nodes: canvas.nodes, jsx: canvas.jsx };
           record.verified_operations = record.operations.filter(operation => operation.status === "applied").length;
           record.canvas_revision = canvas_revision;
           await store.save(record);
         }
         const inspector = await this.publish(store, record, "verified", "Intentional design changes recorded. This is not an import-fidelity claim and no code was changed.", { canvas_image: canvas.image, canvas_revision });
-        return { version: VERSION, status: "clean", phase: "design", capture_id: record.id, artboard_id: record.artboard_id, source_revision: record.source_revision, canvas_revision, pending_verifications: await outstanding(), inspector, changes: changes(record.baseline, { nodes: canvas.nodes, jsx: canvas.jsx }), fidelity_claim: false };
+        return { version: VERSION, status: "clean", phase: "design", capture_id: record.id, artboard_id: record.artboard_id, source_revision: record.source_revision, canvas_revision, pending_verifications: await outstanding(), inspector, changes: changes(record.baseline, { nodes: canvas.nodes, jsx: canvas.jsx }), findings: record.findings, fidelity_claim: false };
       }
       const source = await inventory(record.workspace);
       if (source.revision !== record.source_revision) throw new Error("Source changed since capture");
@@ -929,8 +953,8 @@ export class Adapter {
       }
     }
     if (name === "prepare_edit") {
-      if (record.phase !== "design" || !record.baseline) throw new Error("Verify the initial import before editing its design");
-      if (!["mcp_paper_update_styles", "mcp_paper_set_text_content", "mcp_paper_rename_nodes", "mcp_paper_move_nodes", "mcp_paper_duplicate_nodes", "mcp_paper_delete_nodes"].includes(args.paper_tool)) throw new Error("Unsupported design edit; existing vector assets must be reused");
+      if (record.phase !== "design" || (!record.baseline && !record.composition)) throw new Error("Verify the initial import before editing it; for a new composition use prepare_design instead");
+      if (!["mcp_paper_update_styles", "mcp_paper_set_text_content", "mcp_paper_rename_nodes", "mcp_paper_move_nodes", "mcp_paper_duplicate_nodes", "mcp_paper_delete_nodes", ...(record.composition ? ["mcp_paper_write_html"] : [])].includes(args.paper_tool)) throw new Error("Unsupported design edit; existing vector assets must be reused");
       const paper = new PaperReader();
       await paper.initialize();
       await validateEditTargets(record, args.paper_tool, args.arguments, paper);
@@ -996,13 +1020,23 @@ export class Adapter {
       if (operation.status !== "started") throw new Error("Operation was not admitted by fx");
       const result = JSON.parse(args.result_json);
       if (!result || typeof result !== "object" || result.isError || result.error) throw new Error("Paper did not return a successful structured result");
-      const hasFailure = (value: any): boolean => Boolean(value && typeof value === "object" && (value.result === "error" || value.error || (Array.isArray(value.ignoredStyles) && value.ignoredStyles.length) || Object.values(value).some(item => item && typeof item === "object" && hasFailure(item))));
-      if (hasFailure(result)) throw new Error("Paper reported a partial or ignored operation; reconcile before continuing");
+      const hasFailure = (value: any): boolean => Boolean(value && typeof value === "object" && (value.result === "error" || value.error || Object.values(value).some(item => item && typeof item === "object" && hasFailure(item))));
+      if (hasFailure(result)) throw new Error("Paper reported a failed operation; reconcile before continuing");
+      // An ignored style is a finding on an applied write, not permission to replay it.
+      // Import verification remains strict because these findings prevent a fidelity claim.
+      const collectIgnored = (value: any) => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value.ignoredStyles)) for (const property of value.ignoredStyles) {
+          record.findings.push({ kind: "paper-style-ignored", nodeId: value.nodeId, property: String(property), operation_hash: operation.hash });
+        }
+        for (const child of Object.values(value)) if (child && typeof child === "object") collectIgnored(child);
+      };
+      collectIgnored(result);
       if (operation.tool === "mcp_paper_create_artboard") {
         const nodeId = result.nodeId ?? result.id;
         if (typeof nodeId !== "string" || !nodeId) throw new Error("Paper result requires its artboard node ID");
         record.artboard_id = nodeId;
-        const serialized = serialize(record.root, record.token_bindings, record.id);
+        const serialized = record.composition ? { html: record.composition.html, manifest: undefined } : serialize(record.root, record.token_bindings, record.id);
         record.source_manifest = serialized.manifest;
         const next = { tool: "mcp_paper_write_html", arguments: { targetNodeId: nodeId, mode: "insert-children", html: serialized.html, ...(record.file_id ? { fileId: record.file_id } : {}) } };
         record.operations.push({ ...next, hash: digest(next), status: "pending" });

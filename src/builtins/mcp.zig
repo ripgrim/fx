@@ -563,6 +563,8 @@ pub fn loadRuntime(
         const config_path = try configPathFromHome(alloc, home);
         defer alloc.free(config_path);
         profile = try loadConfigFromPath(alloc, config_path);
+        // Update the recognized bundled launcher before any process loads its tool catalog.
+        for (profile.items) |server| try @import("../core/design/managed_helper.zig").refreshConfigured(alloc, server);
     }
 
     var choice_load = config_runtime.loadProjectMcpChoices(alloc, workspace_root) catch |err| {
@@ -2597,6 +2599,30 @@ test "ensureProfileServerAtPath adds once without replacing a named server" {
     try std.testing.expectEqual(@as(usize, 1), custom.items.len);
     try std.testing.expectEqual(McpTransport.stdio, custom.items[0].transport);
     try std.testing.expectEqualStrings("custom-paper", try custom.items[0].stdioCommand());
+}
+
+test "Design runtime refreshes its bundled launcher before catalog startup" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(home_path);
+    const test_home = try TestHome.install(alloc, home_path);
+    defer test_home.deinit();
+    const launcher = try std.fs.path.join(alloc, &.{ home_path, ".fx", "helpers", "design", "v1.ts" });
+    defer alloc.free(launcher);
+    var result = try ensureProfileServer(alloc, .{ .local = .{ .name = "fx_design", .command = "bun", .args = &.{ "run", launcher } } });
+    defer result.deinit(alloc);
+    const runtime = (try loadRuntime(alloc, home_path, .{})).?;
+    defer {
+        runtime.deinit();
+        alloc.destroy(runtime);
+    }
+    var file = try std.Io.Dir.cwd().openFile(io_mod.getIo(), launcher, .{});
+    defer file.close(io_mod.getIo());
+    const bytes = try io_mod.readFileToEnd(alloc, &file, 4096);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.find(u8, bytes, "await serve();") != null);
 }
 
 test "ensureProfileServer falls back to USERPROFILE" {
