@@ -1786,17 +1786,17 @@ test "design diff shortcut hint appears beside model only when ready" {
     defer input.deinit(std.testing.allocator);
     var ctx = testRenderContext(&input);
     ctx.design_diff_ready = true;
-    var ready = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    var ready = try composeHintRow(std.testing.allocator, false, ctx, 100);
     defer ready.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, ready.items, "Diff ready · ctrl+d to open") != null);
     ctx.design_diff_loading = "| Comparing";
-    var loading = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    var loading = try composeHintRow(std.testing.allocator, false, ctx, 100);
     defer loading.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, loading.items, "| Comparing") != null);
     try std.testing.expect(std.mem.find(u8, loading.items, "Diff ready") == null);
     ctx.design_diff_loading = "";
     ctx.design_diff_ready = false;
-    var pending = try composeHintRow(std.testing.allocator, false, null, ctx, 100);
+    var pending = try composeHintRow(std.testing.allocator, false, ctx, 100);
     defer pending.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, pending.items, "Diff ready") == null);
 }

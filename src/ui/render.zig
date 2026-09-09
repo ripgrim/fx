@@ -1141,7 +1141,7 @@ test "buildHintLine renders full access with subdued permission styling" {
 test "buildHintLine renders design mode in purple" {
     initTheme(false, null);
     var buf: [128]u8 = undefined;
-    const line = buildHintLine(false, false, true, "openai/gpt-4o", .auto, 0, null, false, false, .auto, false, .{ .mode_label = "DESIGN" }, 80, &buf);
+    const line = buildHintLine(false, true, "openai/gpt-4o", .auto, false, .auto, false, .{ .mode_label = "DESIGN" }, 80, &buf);
     const expected = try std.fmt.allocPrint(
         std.testing.allocator,
         "{s}DESIGN{s} · gpt-4o",
