@@ -80,7 +80,9 @@ codebase → editable Paper design → verified codebase workflow.
   across all three views. Escape or Close restores focus and the selected finding.
   Zoom uses the stored capture resolution and does not manufacture image detail.
 - The inspector separates source findings from approximate directional pixel
-  residuals. Regions follows differences with fine 2px tiles and smoothed overlay
+  residuals. Detail is the default: pixel-level, near-opaque color preserves text
+  shapes with a quarter-pixel softening on the overlay alone. Regions is optional
+  and follows differences with fine 2px tiles and smoothed overlay
   edges, leaving hollow interiors clear rather than filling bounding boxes.
   Pixels reveals the comparison mask. Amber denotes mixed residuals, not a
   confirmed semantic move. Grouping changes presentation, never verification
