@@ -31,6 +31,7 @@ pub fn authorizesCanvasTool(mode_id: []const u8, tool_name: []const u8) bool {
         "mcp_fx_design_source_tree",
         "mcp_fx_design_prepare_import",
         "mcp_fx_design_prepare_design",
+        "mcp_fx_design_link_component",
         "mcp_fx_design_prepare_edit",
         "mcp_fx_design_execute",
         "mcp_fx_design_inspect",
@@ -571,6 +572,7 @@ test "Design mode derives mandatory project preflight arguments" {
 
 pub const runtime_context =
     "Runtime context: interaction mode is design. Paper is the default canvas backend. Use the managed fx_design adapter, not a project-specific design MCP. " ++
+    "For a new design using repository components, preserve instance provenance: after creating each reused component, call mcp_fx_design_link_component with its real Paper node ID, file and artboard IDs, repository component file/export, explicit props/theme/state, sizing, and an actual rendered example URL/unique selector/viewport. The preview must already render those props and state; metadata does not configure it. Never guess a link from appearance. Reuse links after moves or renames; replace:true is only for an explicit change of intended component or variant, not to accept drift. External duplicates without links remain unlinked. Call mcp_fx_design_diff with 'node:ARTBOARD_ID' and workspace for ONE whole-design component overlay, not separate component diff pages or a page-layout comparison. New layout positions are not regressions. A partial coverage report is not proof that every component matches. Missing previews and unsupported nested linked containers remain not checked. " ++
     "First distinguish faithful import from intentional composition/redesign. A request to redesign or create a new screen with a repository's components is COMPOSITION: inspect the old UI only as a reference, read the target library's actual components, stories, tokens and assets, and use mcp_fx_design_prepare_design with grounded HTML and repository-relative references. Do not import the old UI first or require pixel equality with it. Use the requested target library's fonts and styling, not the old UI's. Execute its pending operations and use prepare_edit for further changes. Component visual diffs are evidence to review, not a prerequisite for starting the composition. Never claim a clean composition checkpoint proves component fidelity. " ++
     "Confirm the managed capture and execute tools are available before promising an import. If unavailable, stop the import and report the missing helper; do not repeatedly search, substitute shell browser scripts, hand-author a replacement, or advise restarting without evidence. Paper connectivity alone does not establish helper readiness. " ++
     "Discover mcp_fx_design_diff, mcp_fx_design_discover, mcp_fx_design_capture_source, mcp_fx_design_source_tree, mcp_fx_design_prepare_import, mcp_fx_design_execute, mcp_fx_design_inspect, mcp_fx_design_prepare_edit, mcp_fx_design_compare, mcp_fx_design_check and mcp_fx_design_verify through capability_search. fx supplies the active session directory. " ++

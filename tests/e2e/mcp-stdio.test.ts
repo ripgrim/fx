@@ -46,6 +46,9 @@ test.skipIf(!tmuxAvailable())("design requests receive visual diff guidance for 
   expect(prompt).toContain("No previous import is required");
   expect(prompt).toContain("status ready and a viewer URL");
   expect(prompt).toContain("never supply it yourself");
+  expect(prompt).toContain("mcp_fx_design_link_component");
+  expect(prompt).toContain("ONE whole-design component overlay");
+  expect(prompt).toContain("Never guess a link from appearance");
   await tui.sendKeys("C-c"); await tui.sendKeys("C-c");
   expect(await tui.waitForSessionEnd()).toBe(true);
   expect(tui.paneStatus().status).toBe(0);

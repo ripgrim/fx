@@ -6,6 +6,7 @@ const source = @embedFile("helper.ts");
 const inspector_source = @embedFile("inspector.ts");
 const property_source = @embedFile("property_diff.ts");
 const comparison_source = @embedFile("comparison.ts");
+const provenance_source = @embedFile("provenance.ts");
 
 /// Refresh only our recognized launcher before MCP starts it. Custom servers stay untouched.
 pub fn refreshConfigured(alloc: std.mem.Allocator, config: @import("../mcp/mcp_contract.zig").McpServerConfig) !void {
@@ -54,11 +55,23 @@ fn validatedRuntime(alloc: std.mem.Allocator, executable: []const u8) ![]u8 {
 pub fn ensureInstalled(alloc: std.mem.Allocator) ![]u8 {
     const home = io_mod.getenv("HOME") orelse io_mod.getenv("USERPROFILE") orelse return error.HomeNotSet;
     var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(source ++ inspector_source ++ property_source ++ comparison_source, &digest, .{});
+    std.crypto.hash.sha2.Sha256.hash(source ++ inspector_source ++ property_source ++ comparison_source ++ provenance_source, &digest, .{});
     const identity = std.fmt.bytesToHex(digest, .lower);
     const directory = try std.fs.path.join(alloc, &.{ home, ".fx", "helpers", "design", &identity });
     defer alloc.free(directory);
     try io_mod.makeDirRecursive(directory);
+    const provenance_path = try std.fs.path.join(alloc, &.{ directory, "provenance.ts" });
+    defer alloc.free(provenance_path);
+    if (std.Io.Dir.cwd().openFile(io_mod.getIo(), provenance_path, .{})) |provenance_file| {
+        var file = provenance_file;
+        defer file.close(io_mod.getIo());
+        const bytes = try io_mod.readFileToEnd(alloc, &file, provenance_source.len + 1);
+        defer alloc.free(bytes);
+        if (!std.mem.eql(u8, bytes, provenance_source)) return error.DesignHelperIntegrityMismatch;
+    } else |err| switch (err) {
+        error.FileNotFound => try io_mod.writeFileAtomic(alloc, provenance_path, provenance_source),
+        else => return err,
+    }
     const comparison_path = try std.fs.path.join(alloc, &.{ directory, "comparison.ts" });
     defer alloc.free(comparison_path);
     if (std.Io.Dir.cwd().openFile(io_mod.getIo(), comparison_path, .{})) |comparison_file| {

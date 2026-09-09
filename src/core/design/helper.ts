@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { brotliDecompressSync } from "node:zlib";
 import { Inspector, type VerificationSnapshot } from "./inspector";
 import { comparePixelBuffers, comparisonSensitivity } from "./comparison";
+import { InstanceRegistry, validateReference, localRect, renderComponentOverlay, type ComponentReference, type InstanceResult } from "./provenance";
 import { bindImportReceipt, normalizePropertyStyles, readBoundProperties, type SourceManifestEntry, type SourceBinding, type PropertyComparison } from "./property_diff";
 
 export const VERSION = 1;
@@ -64,6 +65,7 @@ export interface DesignNode {
   children: DesignNode[];
 }
 export interface DesignRecord {
+  component_backdrop?: string;
   composition?: { html: string; references: string[] };
   capture_context?: { policy: number; state_label: string; state_fingerprint: string; ready_selector?: string };
   version: number;
@@ -640,8 +642,9 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
+  tool("link_component", "Persist a Paper component instance's intended repository reference. Supply the actual component file/export, explicit props/theme/state, and a real rendered example URL with a unique selector and viewport. The preview must already render that exact intent; metadata does not configure it. Use an isolated container_selector for stretch sizing. Link each reused instance after creation. Links survive moves, renames and sessions; replace:true explicitly changes intent. Then call diff on the artboard for one unified overlay. Never infer a reference from an edited Paper appearance.", { session_directory: string, workspace: string, file_id: string, artboard_id: string, reference: { type: "object", properties: { node_id: string, component_file: string, export_name: string, props: { type: "object" }, theme: string, state: string, sizing: { enum: ["intrinsic", "stretch"] }, preview: { type: "object", properties: { url: string, selector: string, width: { type: "integer" }, height: { type: "integer" }, ready_selector: string, container_selector: string }, required: ["url", "selector", "width", "height"], additionalProperties: false } }, required: ["node_id", "component_file", "export_name", "props", "theme", "state", "sizing", "preview"], additionalProperties: false }, replace: { type: "boolean" } }, ["workspace", "file_id", "artboard_id", "reference"], false),
   tool("prepare_design", "Start a NEW Paper composition or redesign from repository components, without importing or matching the old screen first. Read actual components, tokens and stories, then supply their repository-relative reference paths and grounded HTML. Execute pending operations normally. This records design intent, never import fidelity.", { session_directory: string, workspace: string, name: string, file_id: string, html: string, references: { type: "array", items: string, minItems: 1 }, width: { type: "integer", minimum: 1, maximum: 8192 }, height: { type: "integer", minimum: 1, maximum: 8192 } }, ["workspace", "name", "file_id", "html", "references", "width", "height"], false),
-  tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, use an existing workspace link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
+  tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, compare all linked component instances in the selected artboard as one overlay; otherwise recapture its existing page link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
@@ -660,6 +663,75 @@ export const TOOLS = [
 export class Adapter {
   constructor(readonly inspector = new Inspector()) {}
   async close() { await this.inspector.close(); }
+  private registry(directory: string, workspace: string, file: string, artboard: string) {
+    return new InstanceRegistry(join(dirname(dirname(directory)), "design-provenance"), workspace, file, artboard);
+  }
+  private async componentTree(paper: PaperReader, file: string, artboard: string) {
+    const nodes = new Map<string, Json>(), pending = [artboard];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (nodes.has(id)) throw Error("Invalid Paper hierarchy");
+      if (nodes.size >= 2000) throw Error("Component design exceeds 2000 layers");
+      const node = paperObject(await paper.read("get_node_info", { nodeId: id, fileId: file }));
+      if (node.id !== id || !Array.isArray(node.childIds)) throw Error("Paper hierarchy unavailable");
+      nodes.set(id, node);
+      pending.push(...node.childIds);
+    }
+    return nodes;
+  }
+  async componentDiff(store: Store, args: Json, file: string, artboard: string, links: ComponentReference[]) {
+    const source = await inventory(args.workspace), paper = new PaperReader();
+    await paper.initialize();
+    const before = await paper.snapshot(artboard, file), nodes = await this.componentTree(paper, file, artboard), board = nodes.get(artboard)!;
+    const results: InstanceResult[] = [], linked = new Set(links.map(link => link.node_id));
+    const descendants = (id: string): string[] => (nodes.get(id)?.childIds ?? []).flatMap((child: string) => [child, ...descendants(child)]);
+    const covered = new Set(links.flatMap(link => [link.node_id, ...descendants(link.node_id)]));
+    const cache = new Map<string, { image: string; backdrop: string; size: { width: number; height: number } }>();
+    for (const link of links) {
+      const result: InstanceResult = { node_id: link.node_id, label: link.export_name, status: "unavailable", reference: link };
+      results.push(result);
+      try {
+        validateReference(link, source.files);
+        const node = nodes.get(link.node_id);
+        if (!node || node.isVisible === false) throw Error("Instance missing or hidden");
+        result.rect = localRect(node, board);
+        if (descendants(link.node_id).some(id => linked.has(id))) throw Error("Nested linked instances: check this container separately");
+        const { node_id: _, ...intent } = link;
+        const referenceKey = digest({ intent, revision: source.revision, width: link.sizing === "stretch" ? node.width : null });
+        let reference = cache.get(referenceKey);
+        if (!reference) {
+          const captured = await this.call("capture_source", { session_directory: args.session_directory, workspace: source.root, ...link.preview,
+            component_container: link.sizing === "stretch" ? { selector: link.preview.container_selector, width: node.width } : undefined,
+            component_reference: true });
+          const record = await store.load(captured.capture_id);
+          reference = { image: `data:image/png;base64,${(await readFile(record.screenshot)).toString("base64")}`, backdrop: record.component_backdrop!, size: { width: record.root.rect.width, height: record.root.rect.height } };
+          cache.set(referenceKey, reference);
+        }
+        result.reference_image = reference.image; result.backdrop = reference.backdrop; result.reference_size = reference.size;
+      } catch (error) { result.message = (error as Error).message; }
+    }
+    // Uncovered leaves are regions, not a guessed count of code components.
+    for (const [id, node] of nodes) if (id !== artboard && !covered.has(id) && !node.childIds.length && node.isVisible !== false) {
+      results.push({ node_id: id, label: node.name || "Unlinked region", status: "unlinked", rect: localRect(node, board) });
+    }
+    const browser = new Browser(`fx-design-components-${randomUUID()}`);
+    let rendered;
+    try {
+      const inputs = JSON.stringify(results);
+      if (inputs.length + before.image.length > 32 * 1024 * 1024) throw Error("Component report exceeds 32 MB of image evidence");
+      await browser.call("open", "about:blank");
+      rendered = await browser.evaluate(`(${renderComponentOverlay.toString()})(${JSON.stringify(before.image)},${inputs},${comparePixelBuffers.toString()},${JSON.stringify({ width: board.width, height: board.height })})`);
+    } finally { await browser.call("close").catch(() => undefined); }
+    if (digest(await paper.snapshot(artboard, file)) !== digest(before) || (await inventory(source.root)).revision !== source.revision) return { status: "blocked", message: "Design or code changed during comparison. Run /diff again." };
+    const report = { ...rendered, linked: links.length, checked: rendered.instances.filter((item: InstanceResult) => ["consistent", "drift"].includes(item.status)).length,
+      unlinked_regions: rendered.instances.filter((item: InstanceResult) => item.status === "unlinked").length, source_revision: source.revision };
+    const record: DesignRecord = { version: VERSION, id: randomUUID(), workspace: source.root, source_revision: source.revision, source_files: source.files,
+      url: "components:" + artboard, selector: "", viewport: { width: board.width, height: board.height }, screenshot: "", phase: "design", file_id: file, artboard_id: artboard,
+      root: { key: "0", name: board.name, tag: "div", text: "", styles: {}, bindings: {}, children: [], rect: { x: 0, y: 0, width: board.width, height: board.height } }, findings: [], operations: [] };
+    const state = report.instances.some((item: InstanceResult) => item.status !== "consistent") ? "needs-repair" : "verified";
+    const viewer = await this.publish(store, record, state, "Component comparison", { canvas_image: before.image, component_report: report });
+    return viewer.unavailable ? { status: "blocked", message: "Viewer unavailable." } : { status: "ready", url: viewer.url };
+  }
   async freshDiff(store: Store, args: Json, parameters: Json, previous?: DesignRecord) {
     const paper = new PaperReader();
     await paper.initialize();
@@ -724,6 +796,15 @@ export class Adapter {
     const directory = resolve(args.session_directory);
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
+    if (name === "link_component") {
+      const source = await inventory(args.workspace);
+      validateReference(args.reference, source.files);
+      const paper = new PaperReader(); await paper.initialize();
+      const nodes = await this.componentTree(paper, args.file_id, args.artboard_id);
+      if (!nodes.has(args.reference.node_id)) throw Error("Instance is outside the specified artboard");
+      await this.registry(directory, source.root, args.file_id, args.artboard_id).link(args.reference, args.replace === true);
+      return { status: "linked", node_id: args.reference.node_id, artboard_id: args.artboard_id };
+    }
     if (name === "prepare_design") {
       if (typeof args.name !== "string" || !args.name.trim() || typeof args.file_id !== "string" || !args.file_id.trim()) throw new Error("Provide a design name and Paper file ID");
       const source = await inventory(args.workspace);
@@ -750,6 +831,22 @@ export class Adapter {
       try { parameters = parseDiffParameters(String(args.target ?? "")); }
       catch (error) { return { status: "blocked", message: (error as Error).message }; }
       if (parameters.url) return this.freshDiff(store, args, parameters);
+      if (args.workspace && (!parameters.target || parameters.target.startsWith("node:"))) {
+        const paper = new PaperReader(); await paper.initialize();
+        const info = paperObject(await paper.read("get_basic_info", {}));
+        const file = typeof info.url === "string" ? new URL(info.url).pathname.split("/")[2] : undefined;
+        let node = parameters.target.slice(5);
+        if (!node) {
+          const selection = paperObject(await paper.read("get_selection", file ? { fileId: file } : {}));
+          if (selection.selectedNodes?.length === 1) node = selection.selectedNodes[0].id;
+        }
+        if (file && node) {
+          const info = paperObject(await paper.read("get_node_info", { nodeId: node, fileId: file }));
+          const artboard = info.artboardId ?? node;
+          const links = await this.registry(directory, await realpath(args.workspace), file, artboard).list();
+          if (links.length) return this.componentDiff(store, args, file, artboard, links);
+        }
+      }
       const stores = [store];
       const workspace = args.workspace ? await realpath(args.workspace) : undefined;
       // Session directories are host-bound. Search only sibling sessions in this profile,
@@ -788,6 +885,11 @@ export class Adapter {
       if (!records.length) return { status: "blocked", message: "Supply a source: /diff node:ID http://localhost:3000/path" };
       if (records.length !== 1) return { status: "blocked", message: "Choose a capture: " + records.map(record => `/diff capture:${record.id}`).join(" · ") };
       const record = records[0];
+      if (record.file_id && record.artboard_id) {
+        const links = await this.registry(directory, record.workspace, record.file_id, record.artboard_id).list();
+        if (links.length) return this.componentDiff(store, { ...args, workspace: record.workspace }, record.file_id, record.artboard_id, links);
+      }
+      if (record.composition || record.url.startsWith("components:")) return { status: "blocked", message: "Link the design's component instances before comparing." };
       return this.freshDiff(store, args, parameters, record);
     }
     if (name === "discover") {
@@ -824,6 +926,26 @@ export class Adapter {
           throw new Error('Intended capture state did not become ready');
         })()`);
         const temporary_screenshot = join(store.directory, `${id}.capture.png`);
+        let component_backdrop: string | undefined;
+        if (args.component_reference) component_backdrop = await browser.evaluate(`(() => {
+          const roots = document.querySelectorAll(${JSON.stringify(args.selector)});
+          if (roots.length !== 1) throw Error('Select one rendered component');
+          const root = roots[0], container = ${JSON.stringify(args.component_container ?? null)};
+          if (container) {
+            const parents = document.querySelectorAll(container.selector);
+            if (parents.length !== 1 || parents[0] === root || !parents[0].contains(root)) throw Error('Select the isolated reference container');
+            parents[0].style.width = container.width + 'px'; parents[0].style.boxSizing = 'content-box';
+          }
+          for (let parent = root.parentElement; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            if (style.backgroundImage !== 'none') throw Error('Reference requires a solid isolated backdrop');
+            const color = style.backgroundColor;
+            if (color === 'rgba(0, 0, 0, 0)' || color === 'transparent') continue;
+            if (color.startsWith('rgba(')) throw Error('Reference backdrop is translucent');
+            return color;
+          }
+          return 'rgb(255, 255, 255)';
+        })()`);
         const snapshot = await captureConsistently(browser, args.selector, temporary_screenshot);
         if (args.ready_selector && !await browser.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(args.ready_selector)}); return !!(node && node.getBoundingClientRect().width && node.getBoundingClientRect().height); })()`)) throw new Error("Intended capture state changed during capture");
         const capture_context = { policy: 3, state_label: args.state_label ?? (args.session_storage || args.local_storage ? "explicit prepared state" : "isolated default state"), state_fingerprint: digest({ session: args.session_storage ?? {}, local: args.local_storage ?? {} }), ready_selector: args.ready_selector };
@@ -849,7 +971,7 @@ export class Adapter {
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const screenshot = join(store.directory, `${capture_id}.png`);
         await rename(temporary_screenshot, screenshot);
-        const record: DesignRecord = { version: VERSION, id: capture_id, workspace: source.root, source_revision: source.revision, source_files: source.files, source_index: await sourceIndex(source.root, source.files), url: url.href, selector: args.selector, viewport, root: snapshot.root, screenshot, findings: snapshot.findings, phase: "import", operations: [] };
+        const record: DesignRecord = { version: VERSION, id: capture_id, workspace: source.root, source_revision: source.revision, source_files: source.files, source_index: await sourceIndex(source.root, source.files), url: url.href, selector: args.selector, viewport, root: snapshot.root, screenshot, findings: snapshot.findings, phase: "import", operations: [], component_backdrop };
         record.font_evidence = font_evidence;
         record.capture_context = capture_context;
         await store.save(record);

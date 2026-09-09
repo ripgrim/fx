@@ -175,6 +175,8 @@ Use `/diff node:ID URL` to capture a live page and compare it with Paper, withou
 
 Example: `/diff node:2DY-0 http://localhost:3000/fullscreen/demo/compliance --selector body --height 1000`.
 
+For new designs, the agent can persist each reused component with `fx_design_link_component`: its Paper node ID, repository file/export, props, theme, state, and real rendered example. `/diff node:ARTBOARD_ID` then checks all linked instances in one design-wide overlay. Movement and layer names do not change the reference. Selecting an instance reveals its code/Paper pair inline. Unlinked regions and unavailable references remain explicitly unchecked, not matching. The preview must already render the declared props and state; linking metadata does not configure a story.
+
 Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `--session-storage`, and `--local-storage`. Quote selectors containing spaces and storage JSON, for example `--session-storage '{"owned":"true"}'`. Captures use an isolated browser's default state unless explicit storage is supplied; they do not inherit your open tab's state. fx hides the Next.js development overlay during capture.
 
 Comparisons run in the background with a `Comparing` spinner beside the model. You can keep typing; repeating `/diff` while one is running does not start another comparison.

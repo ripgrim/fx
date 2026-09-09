@@ -5,6 +5,32 @@ codebase → editable Paper design → verified codebase workflow.
 
 ## Implemented foundation
 
+- Component provenance is stored under profile `design-provenance/`, keyed by
+  workspace, Paper file, artboard and node ID. `link_component` records intended
+  component file/export, props, theme, state and rendered preview. Changing intent
+  requires explicit `replace: true`; moving or renaming a layer does not rebind it.
+  `/diff node:ARTBOARD_ID` and a selected linked instance use the same unified
+  component path across sessions. Explicit URL comparisons remain page comparisons.
+- Component references are captured fresh through the existing source renderer.
+  The supplied example must already implement the declared props/theme/state;
+  these fields are provenance, not executable Storybook controls or compiler proof
+  that an arbitrary URL imports the declared file. The adapter validates file
+  existence and Paper membership, never guesses component identity by appearance.
+  Intrinsic references keep their natural size. Stretch references require an
+  isolated ancestor container; only its width is set to the design's constraint.
+  Reference pixels are never resized to conceal size drift.
+- One PNG overlay projects node-local pixel differences onto the Paper design.
+  Instances are cropped from the single full-artboard PNG, not exported in
+  isolation, because Paper node exports can lose ancestor layout and clip text.
+  Layout placement is not compared to an old page. References use a solid
+  backdrop shared with the Paper export for transparency. Non-solid backdrops,
+  unavailable previews, missing/hidden nodes, and nested linked containers are
+  not checked. Nested child instances can still be checked independently.
+  Uncovered visible leaf layers are listed as unlinked regions, not a guessed
+  component count. External duplicates do not inherit links automatically.
+  Source or canvas changes during a comparison reject mixed-time evidence.
+  Current limits are 100 links, 2000 layers and 32 million pixels per image.
+
 - New compositions use `prepare_design` with HTML grounded in existing repository
   files, a Paper file ID, and dimensions. Prepared writes still require host
   admission and are scoped to the new artboard. Unlike faithful imports, a
