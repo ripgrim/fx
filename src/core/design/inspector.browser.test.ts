@@ -34,11 +34,11 @@ test("inspector renders actual snapshots, focuses findings and fits narrow viewp
     await browser.evaluate(`document.querySelector('#diagnostics summary').click()`);
     // A preview without comparison metadata uses the current default tolerance;
     // rendering it does not change the stored verification result.
-    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(255);
+    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(195);
     snapshot.visual = { sensitivity: comparisonSensitivity, different_pixels: 112, total_pixels: 28800, dimensions_match: true, match: false };
     await inspector.publish(directory, snapshot);
-    await browser.evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]===255){clearInterval(timer);resolve(true)}else if(++attempts>100){clearInterval(timer);reject(Error('Sensitivity did not update'))}},50)})`);
-    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(255);
+    await browser.evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]===195){clearInterval(timer);resolve(true)}else if(++attempts>100){clearInterval(timer);reject(Error('Sensitivity did not update'))}},50)})`);
+    expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(1,1,1,1).data[0]`)).toBe(195);
     expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data[0]`)).toBe(195);
     await browser.evaluate(`document.querySelector('#findings button').click()`);
     expect(await browser.evaluate(`document.querySelector('#source').width`)).toBe(52);

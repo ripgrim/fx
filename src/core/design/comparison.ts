@@ -2,11 +2,11 @@
  * No area allowance or shifted-pixel matching: small missing details still count.
  */
 export const comparisonSensitivity = Object.freeze({
-  version: 3,
-  name: "balanced",
+  version: 4,
+  name: "lossless",
   dimension_epsilon_px: 1 / 32,
-  pixel_channel_epsilon: 24,
-  antialias: true,
+  pixel_channel_epsilon: 0,
+  antialias: false,
 });
 
 /** Dependency-free so the same implementation can run in capture and inspector
@@ -27,38 +27,7 @@ export function comparePixelBuffers(source: ArrayLike<number>, canvas: ArrayLike
     if (delta > 0) raw_different_pixels++;
     if (delta > channel_epsilon) { mask[offset / 4] = 1; different_pixels++; }
   }
-  // Only suppress intermediate edge shades between two unchanged local anchors.
-  // Never search for a shifted matching pixel: moved strokes and missing borders
-  // must survive. Alpha changes also remain evidence.
-  let antialiased_pixels = 0;
-  if (width) {
-    const height = mask.length / width;
-    const blend = (image: ArrayLike<number>, i: number, lo: number, hi: number) => {
-      let dot = 0, length = 0;
-      for (let c = 0; c < 3; c++) { const d = source[hi + c]! - source[lo + c]!; dot += (image[i + c]! - source[lo + c]!) * d; length += d * d; }
-      if (length < 3 * 64 * 64) return false;
-      const t = dot / length;
-      if (t <= .08 || t >= .92) return false;
-      for (let c = 0; c < 3; c++) if (Math.abs(image[i + c]! - (source[lo + c]! + t * (source[hi + c]! - source[lo + c]!))) > 3) return false;
-      return true;
-    };
-    for (let p = 0; p < mask.length; p++) {
-      if (!mask[p]) continue;
-      const i = p * 4, x = p % width, y = Math.floor(p / width);
-      if (source[i + 3] !== 255 || canvas[i + 3] !== 255) continue;
-      let lo = -1, hi = -1, minimum = Infinity, maximum = -Infinity;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        if ((!dx && !dy) || x + dx < 0 || x + dx >= width || y + dy < 0 || y + dy >= height) continue;
-        const n = ((y + dy) * width + x + dx) * 4;
-        if (source[n + 3] !== 255 || canvas[n + 3] !== 255) continue;
-        if ([0, 1, 2].some(c => Math.abs(source[n + c]! - canvas[n + c]!) > 3)) continue;
-        const luminance = source[n]! + source[n + 1]! + source[n + 2]!;
-        if (luminance < minimum) { minimum = luminance; lo = n; }
-        if (luminance > maximum) { maximum = luminance; hi = n; }
-      }
-      if (lo >= 0 && hi >= 0 && blend(source, i, lo, hi) && blend(canvas, i, lo, hi)) { mask[p] = 0; different_pixels--; antialiased_pixels++; }
-    }
-  }
+  const antialiased_pixels = 0;
   return { mask, different_pixels, raw_different_pixels, antialiased_pixels, ignored_pixels: raw_different_pixels - different_pixels };
 }
 

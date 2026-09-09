@@ -48,16 +48,16 @@ codebase → editable Paper design → verified codebase workflow.
   similarity. Missing/ambiguous bindings remain unverified. SVG nodes are not yet
   covered by this property mapping. Equivalent CSS colors are compared after
   browser normalization; these scoped checks do not replace screenshot verification.
-  Balanced sensitivity ignores dimension rounding up to 1/32 CSS px and pixel
-  channel differences up to 24/255. Border presence and border-width checks remain
+  Lossless comparison ignores dimension rounding up to 1/32 CSS px but preserves
+  every pixel-channel difference. Border presence and border-width checks remain
   independent, so a missing 1px border still fails. There is no whole-image area
   allowance: even one above-threshold pixel remains a visual difference. The host
   gate and inspector use the same pixel comparator. Checkpoints retain the policy,
   raw difference count and ignored noise count; older checkpoints without a policy
   use the current preview tolerance until checked again; stored results are unchanged.
-  Anti-alias filtering suppresses only intermediate edge shades between unchanged
-  neighboring color anchors. Solid strokes, alpha changes, and missing borders
-  remain differences. Stored policies preserve earlier comparison behavior.
+  Anti-alias suppression is disabled: intermediate glyph shades and faint edges
+  remain evidence. Earlier stored results are historical and require a new diff
+  to obtain lossless-policy metrics.
   Paper captures use PNG image exports rather than JPEG screenshots. Failed PNG
   exports fail explicitly instead of silently falling back to compressed evidence.
   A verified import records a baseline and enters the design phase, where
