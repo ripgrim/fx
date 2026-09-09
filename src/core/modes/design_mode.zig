@@ -30,6 +30,8 @@ pub fn authorizesCanvasTool(mode_id: []const u8, tool_name: []const u8) bool {
         "mcp_fx_design_capture_source",
         "mcp_fx_design_source_tree",
         "mcp_fx_design_prepare_import",
+        "mcp_fx_design_prepare_design",
+        "mcp_fx_design_link_component",
         "mcp_fx_design_prepare_edit",
         "mcp_fx_design_execute",
         "mcp_fx_design_inspect",
@@ -251,7 +253,7 @@ pub fn updateFinalVerificationRequired(
         return true;
     }
     if (std.mem.eql(u8, tool_name, "mcp_design_import_source")) return true;
-    if (std.mem.eql(u8, tool_name, "mcp_fx_design_prepare_import") or std.mem.eql(u8, tool_name, "mcp_fx_design_prepare_edit")) return true;
+    if (std.mem.eql(u8, tool_name, "mcp_fx_design_prepare_design") or std.mem.eql(u8, tool_name, "mcp_fx_design_prepare_import") or std.mem.eql(u8, tool_name, "mcp_fx_design_prepare_edit")) return true;
     if ((std.mem.eql(u8, tool_name, "mcp_fx_design_verify") or std.mem.eql(u8, tool_name, "mcp_fx_design_check")) and automatic_check_clean(output)) return false;
     return currently_required;
 }
@@ -549,6 +551,7 @@ test "Design automatic whole-surface checkpoint satisfies the final gate" {
     try std.testing.expect(!updateFinalVerificationRequired(true, id, "mcp_fx_design_execute", true, "paper result\n\n[AUTOMATIC DESIGN CHECK]\n" ++ proof));
     try std.testing.expect(!updateFinalVerificationRequired(true, id, "mcp_fx_design_check", true, "{\"result\":{\"structuredContent\":" ++ proof ++ "}}"));
     try std.testing.expect(updateFinalVerificationRequired(false, id, "mcp_fx_design_prepare_import", true, "prepared"));
+    try std.testing.expect(updateFinalVerificationRequired(false, id, "mcp_fx_design_prepare_design", true, "prepared"));
     try std.testing.expect(updateFinalVerificationRequired(false, id, "mcp_fx_design_execute", true, "paper result\n\n[AUTOMATIC DESIGN CHECK]\n{\"status\":\"pending\"}"));
 }
 
@@ -569,6 +572,8 @@ test "Design mode derives mandatory project preflight arguments" {
 
 pub const runtime_context =
     "Runtime context: interaction mode is design. Paper is the default canvas backend. Use the managed fx_design adapter, not a project-specific design MCP. " ++
+    "For a new design using repository components, preserve instance provenance: after creating each reused component, call mcp_fx_design_link_component with its real Paper node ID, file and artboard IDs, repository component file/export, explicit props/theme/state, sizing, and an actual rendered example URL/unique selector/viewport. The preview must already render those props and state; metadata does not configure it. Never guess a link from appearance. Reuse links after moves or renames; replace:true is only for an explicit change of intended component or variant, not to accept drift. External duplicates without links remain unlinked. Call mcp_fx_design_diff with 'node:ARTBOARD_ID' and workspace for ONE whole-design component overlay, not separate component diff pages or a page-layout comparison. New layout positions are not regressions. A partial coverage report is not proof that every component matches. Missing previews and unsupported nested linked containers remain not checked. " ++
+    "First distinguish faithful import from intentional composition/redesign. A request to redesign or create a new screen with a repository's components is COMPOSITION: inspect the old UI only as a reference, read the target library's actual components, stories, tokens and assets, and use mcp_fx_design_prepare_design with grounded HTML and repository-relative references. Do not import the old UI first or require pixel equality with it. Use the requested target library's fonts and styling, not the old UI's. Execute its pending operations and use prepare_edit for further changes. Component visual diffs are evidence to review, not a prerequisite for starting the composition. Never claim a clean composition checkpoint proves component fidelity. " ++
     "Confirm the managed capture and execute tools are available before promising an import. If unavailable, stop the import and report the missing helper; do not repeatedly search, substitute shell browser scripts, hand-author a replacement, or advise restarting without evidence. Paper connectivity alone does not establish helper readiness. " ++
     "Discover mcp_fx_design_diff, mcp_fx_design_discover, mcp_fx_design_capture_source, mcp_fx_design_source_tree, mcp_fx_design_prepare_import, mcp_fx_design_execute, mcp_fx_design_inspect, mcp_fx_design_prepare_edit, mcp_fx_design_compare, mcp_fx_design_check and mcp_fx_design_verify through capability_search. fx supplies the active session directory. " ++
     "An explicit request to diff or visually compare Paper with code means produce the visual diff viewer, not a written style audit. Discover and select mcp_fx_design_diff directly; inspect is only an import-record listing, and compare is for three-way edit reconciliation, not this visual comparison. No previous import is required. " ++
@@ -577,7 +582,7 @@ pub const runtime_context =
     "A successful visual diff requires status ready and a viewer URL from mcp_fx_design_diff. Show the generic viewer link only, without a prose comparison, matching checklist, or claim of fidelity. If blocked, report the actionable blocker once; do not substitute token comparisons or raw Paper JSX for a visual diff. " ++
     "Read Paper's paper-mcp-instructions through get_guide, not resource_list or prompt_list. Discover the requested route including its shell, actual source assets, fonts, CSS imports and scoped tokens. Storybook is optional. " ++
     "A URL does not identify a stateful screen. Capture uses an isolated browser, not the user's tab. Determine the intended state from the request and source; when ambiguous, ask which state to import. Use ready_selector and explicit session_storage/local_storage preparation when appropriate. Never invent ownership/authentication state or copy credentials. Capture state mismatches are capture failures, not Paper redesign requests. " ++
-    "Capture the live page, inspect the source tree, then prepare_import. Call execute with each pending operation hash; no separate selection of the underlying Paper tool is needed. fx loads the exact payload, checks permission, executes Paper and records its real result. Inspect after each action for the next operation. Never supply receipts or recreate an existing SVG or image from perception. " ++
+    "For faithful imports, capture the live page, inspect the source tree, then prepare_import. For either workflow, call execute with each pending operation hash; no separate selection of the underlying Paper tool is needed. fx loads the exact payload, checks permission, executes Paper and records its real result. Inspect after each action for the next operation. Never supply receipts or recreate an existing SVG or image from perception. " ++
     "Keep progress narration sparse: one initial update, then meaningful milestones or actionable blockers. Do not narrate every tool selection, discovery call, or retry. If the same verification blocker persists without new evidence, stop and report it once; never repeat mutations to repair receipts. " ++
     "Unsupported styling, ambiguous token bindings and missing fonts are findings, not permission to invent replacements. Verify the initial import before claiming fidelity. " ++
     "Once verified, intentional Paper edits are design changes, not regressions against the old screenshot. Layer names may change without changing source identity. Use prepare_edit for targeted canvas changes. " ++

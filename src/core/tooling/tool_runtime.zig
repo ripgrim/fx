@@ -434,7 +434,10 @@ pub fn executeToolCallAuthorized(
         }) orelse return error.DesignOperationUnavailable;
         defer resolved.deinit(request.result_allocator);
         const Operation = struct { tool: []const u8, arguments: std.json.Value };
-        const resolved_json = try design_helper.resultJson(request.call_allocator, resolved.model_output);
+        const resolved_json = design_helper.resultJson(request.call_allocator, resolved.model_output) catch |err| switch (err) {
+            error.DesignMcpResultFailed => return .{ .status = .failure, .status_detail = "DesignOperationBlocked", .model_output = try request.result_allocator.dupe(u8, resolved.model_output) },
+            else => return err,
+        };
         defer request.call_allocator.free(resolved_json);
         var operation = try std.json.parseFromSlice(Operation, request.call_allocator, resolved_json, .{ .ignore_unknown_fields = true });
         defer operation.deinit();
@@ -444,6 +447,18 @@ pub fn executeToolCallAuthorized(
         try std.json.Stringify.value(operation.value.arguments, .{}, &payload.writer);
         var effective_request = request;
         effective_request.call = .{ .id = request.call.id, .name = operation.value.tool, .arguments_json = payload.written() };
+        // The wrapper's advertised definition is not the Paper tool's identity.
+        // Resolve the target through the same scoped catalog before preflight
+        // marks an operation started. Keep its binding through final dispatch.
+        effective_request.expected_mcp_binding = null;
+        if (execution_ctx.mcp_tool_schema) |schema_fn| {
+            var projection = try schema_fn(mcp_ctx, request.call_allocator, operation.value.tool, execution_ctx.permission_rules, execution_ctx.context_limits, execution_ctx.mcp_access, execution_ctx.cancel_flag) orelse return error.DesignPaperToolNotSelected;
+            defer projection.deinit(request.call_allocator);
+            switch (projection) {
+                .selected => |selected| effective_request.expected_mcp_binding = selected.mcp_binding,
+                .rejected => |rejected| return .{ .status = .failure, .status_detail = "DesignOperationInvalid", .model_output = try request.result_allocator.dupe(u8, rejected.model_output) },
+            }
+        }
         // Host-resolved payloads need schema validation and permission, not a
         // second model discovery step. MCP access scopes remain unchanged.
         execution_ctx.advertised_dynamic_tool_names = &.{operation.value.tool};
@@ -472,7 +487,8 @@ pub fn executeToolCallAuthorized(
         effective_request.max_tool_result_bytes = 32 * 1024 * 1024;
         var executed = try executeToolCallAuthorized(execution_ctx, effective_request);
         const display = @import("tool_result_limits.zig").prepareModelOutput(request.result_allocator, request.call.name, executed.model_output, request.max_tool_result_bytes) catch return executed;
-        request.result_allocator.free(@constCast(executed.model_output));
+        // Dispatch failures may borrow static diagnostic text. The request
+        // arena owns any allocated original; never free a borrowed result here.
         executed.model_output = display;
         return executed;
     }
@@ -528,7 +544,10 @@ pub fn executeToolCallAuthorized(
             .model_output = try request.result_allocator.dupe(u8, "design-preflight: blocked — validator returned no result; no Paper mutation was executed"),
         };
         defer preflight.deinit(request.result_allocator);
-        const preflight_json = try design_helper.resultJson(request.result_allocator, preflight.model_output);
+        const preflight_json = design_helper.resultJson(request.result_allocator, preflight.model_output) catch |err| switch (err) {
+            error.DesignMcpResultFailed => return .{ .status = .failure, .status_detail = "DesignPreflightBlocked", .model_output = try request.result_allocator.dupe(u8, preflight.model_output) },
+            else => return err,
+        };
         defer request.result_allocator.free(preflight_json);
         if (!design_mode.automatic_preflight_clean(preflight_json)) {
             return .{
@@ -1245,7 +1264,7 @@ fn refreshChangedMcpTool(ctx: Context, arena: Allocator, name: []const u8) !Tool
                 selected[0] = .{ .name = name, .schema_json = payload.model_output, .mcp_binding = payload.mcp_binding };
                 return .{
                     .status = .failure,
-                    .model_output = "MCP tool definition changed before execution. Its current schema is loaded; review it before issuing a new call.",
+                    .model_output = try arena.dupe(u8, "MCP tool definition changed before execution. Its current schema is loaded; review it before issuing a new call."),
                     .selected_dynamic_tools = selected,
                     .context_notices = if (payload.notice) |value| notices: {
                         const values = try arena.alloc([]const u8, 1);
@@ -6398,6 +6417,8 @@ const McpFixture = struct {
     };
 
     const DesignCheckpointContext = struct {
+        require_binding: bool = false,
+        resolve_blocked: bool = false,
         large_result: bool = false,
         preflight_calls: usize = 0,
         paper_calls: usize = 0,
@@ -6452,9 +6473,17 @@ const McpFixture = struct {
         return error.McpFixtureFailure;
     }
 
-    fn callDesignCheckpoint(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, max_bytes: usize, _: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
+    const paper_binding: types.McpToolBinding = .{ .runtime_generation = 1, .connection_generation = 2, .catalog_generation = 3, .auth_generation = 4, .definition_digest = .{42} ** 32 };
+
+    fn designSchema(_: *anyopaque, arena: Allocator, name: []const u8, _: types.PermissionRuleSet, _: context_limits.Values, _: tool_mcp_runtime.Access, _: ?*std.atomic.Value(bool)) anyerror!?tool_mcp_runtime.ToolSchemaResult {
+        try std.testing.expectEqualStrings("mcp_paper_write_html", name);
+        return .{ .selected = .{ .model_output = try arena.dupe(u8, "{}"), .mcp_binding = paper_binding } };
+    }
+
+    fn callDesignCheckpoint(raw_ctx: *anyopaque, arena: Allocator, name: []const u8, arguments_json: []const u8, max_bytes: usize, options: tool_mcp_runtime.CallOptions) anyerror!?tool_mcp_runtime.CallResult {
         const ctx: *DesignCheckpointContext = @ptrCast(@alignCast(raw_ctx));
         if (std.mem.eql(u8, name, "mcp_fx_design_resolve_operation")) {
+            if (ctx.resolve_blocked) return .{ .model_output = try arena.dupe(u8, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"Reconcile the interrupted operation before retrying\"}]}") };
             return .{ .model_output = try arena.dupe(u8, "{\"tool\":\"mcp_paper_write_html\",\"arguments\":{\"fileId\":\"file-1\",\"targetNodeId\":\"node-1\",\"html\":\"<div>Exact stored payload</div>\",\"mode\":\"insert-children\"}}") };
         }
         if (std.mem.eql(u8, name, "mcp_fx_design_preflight")) {
@@ -6462,6 +6491,7 @@ const McpFixture = struct {
             return .{ .model_output = try arena.dupe(u8, "{\"version\":1,\"status\":\"clean\",\"capture_id\":\"capture-1\",\"source_revision\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"operation_hash\":\"1111111111111111111111111111111111111111111111111111111111111111\"}") };
         }
         if (std.mem.eql(u8, name, "mcp_paper_write_html")) {
+            if (ctx.require_binding) try std.testing.expectEqualDeep(paper_binding, options.expected_binding.?);
             ctx.paper_calls += 1;
             try std.testing.expect(max_bytes >= 32 * 1024 * 1024);
             return .{ .model_output = try arena.dupe(u8, if (ctx.large_result) "{\"createdNodes\":[],\"padding\":\"" ++ "x" ** (80 * 1024) ++ "\"}" else "{\"createdNodes\":[]}") };
@@ -6664,7 +6694,7 @@ test "Design mode executes stored payloads and records actual Paper results" {
     defer std.testing.allocator.free(test_home);
     try setTestHome(test_home);
     defer setTestHome(null) catch {};
-    var checkpoint = McpFixture.DesignCheckpointContext{};
+    var checkpoint = McpFixture.DesignCheckpointContext{ .require_binding = true };
     const advertised = [_][]const u8{"mcp_fx_design_execute"};
     var rt = TestRuntime{
         .interaction_mode = design_mode.id,
@@ -6672,6 +6702,7 @@ test "Design mode executes stored payloads and records actual Paper results" {
         .mcp_has_tool = McpFixture.hasTrue,
         .mcp_call_tool = McpFixture.callDesignCheckpoint,
         .mcp_validate_tool = McpFixture.validateDesign,
+        .mcp_tool_schema = McpFixture.designSchema,
         .advertised_dynamic_tool_names = &advertised,
     };
     defer rt.deinit(std.testing.allocator);
@@ -6680,10 +6711,19 @@ test "Design mode executes stored payloads and records actual Paper results" {
     defer arena_state.deinit();
     var execution_context = rt.context();
     execution_context.lifecycle_scope.session_id = "design-checkpoint";
-    const result = try executeToolCall(execution_context, arena_state.allocator(), .{
-        .id = "paper-write",
-        .name = "mcp_fx_design_execute",
-        .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}",
+    const result = try executeToolCallAuthorized(execution_context, .{
+        .call_allocator = arena_state.allocator(),
+        .result_allocator = arena_state.allocator(),
+        .session_grants = execution_context.session_grants,
+        .max_tool_result_bytes = execution_context.max_tool_result_bytes,
+        .authority = .ordinary,
+        .advertised_dynamic_tool_names = &advertised,
+        .expected_mcp_binding = .{ .runtime_generation = 1, .connection_generation = 1, .catalog_generation = 1, .auth_generation = 1, .definition_digest = .{7} ** 32 },
+        .call = .{
+            .id = "paper-write",
+            .name = "mcp_fx_design_execute",
+            .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}",
+        },
     });
 
     try std.testing.expectEqual(@as(usize, 1), checkpoint.preflight_calls);
@@ -6706,6 +6746,11 @@ test "Design mode executes stored payloads and records actual Paper results" {
     const large = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "large", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
     try std.testing.expectEqual(@as(usize, 2), checkpoint.receipt_calls);
     try std.testing.expect(large.model_output.len <= rt.max_tool_result_bytes);
+    checkpoint.resolve_blocked = true;
+    const blocked = try executeToolCall(execution_context, arena_state.allocator(), .{ .id = "blocked", .name = "mcp_fx_design_execute", .arguments_json = "{\"capture_id\":\"capture-1\",\"operation_hash\":\"hash\"}" });
+    try std.testing.expectEqualStrings("DesignOperationBlocked", blocked.status_detail.?);
+    try expectContains(blocked.model_output, "Reconcile the interrupted operation");
+    try std.testing.expectEqual(@as(usize, 2), checkpoint.paper_calls);
 }
 
 test "MCP execution binds the last live action generation before transport" {

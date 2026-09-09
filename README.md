@@ -163,15 +163,19 @@ JSON and quiet requests stay noninteractive by default. Add `--prompt-permission
 
 Design imports checkpoint automatically after managed Paper operations. Full receipts are retained separately from bounded agent output, allowing interrupted receipt recording to recover without repeating the Paper write. Blocked verification ends without a forced retry loop. The TUI shows verification state and a review link; the first meaningful comparison opens a reusable local browser inspector that updates at subsequent checkpoints. When a preview is ready, the footer offers `ctrl+d` to reopen it without changing your draft. A synchronized lightbox supports zooming and panning source, Paper, and difference images. Receipt-mapped dimension/border findings and approximate red/green pixel residuals remain distinct. Intentional design edits are recorded as changes, not automatically reverted to the import baseline.
 
-Verification ignores tiny dimension rounding (up to 1/32 CSS px) and low-intensity pixel noise (up to 16/255 per channel), consistently in the gate and overlay. Missing borders remain independently checked; small details are not discarded based on their percentage of the image.
+Verification uses lossless Paper PNG exports. Pixel comparison preserves every channel difference, including faint glyph edges, without anti-alias suppression. Tiny dimension rounding (up to 1/32 CSS px) remains tolerated. Detail is the default overlay: near-opaque pixel-level highlights without blur. Regions and Pixels remain optional. Amber marks mixed regions, red source residuals, and green Paper residuals. Missing borders remain independently checked. Font-rendering differences can still appear; they are not JPEG compression artifacts.
 
 Inside a saved session, `/permissions remember <allow|deny> <tool-name> <arguments-json>` stores an exact confirmed rule without running the action. `/permissions` lists stable rule IDs, and `/permissions revoke <rule-id>` removes a stored rule even when its original workspace or file state has changed.
+
+New screens and redesigns use repository components, tokens, and assets through `prepare_design`, without importing the old screen first. Their checkpoints record intentional changes, not component fidelity. Component visual diffs remain a separate comparison against rendered examples.
 
 Stateful design captures use an isolated browser with optional explicit storage and a readiness selector. DOM and screenshot consistency checks reject changing captures before import; they do not inherit your open browser tab's state.
 
 Use `/diff node:ID URL` to capture a live page and compare it with Paper, without an import or AI turn. The host returns a clickable viewer link; Ctrl+D opens the latest comparison. Omit `node:ID` to use the current Paper selection. Without a URL, `/diff`, `/diff node:ID`, `/diff capture:ID`, and linked routes resolve existing workspace imports across sessions and capture their source again. Original imports are not modified.
 
 Example: `/diff node:2DY-0 http://localhost:3000/fullscreen/demo/compliance --selector body --height 1000`.
+
+For new designs, the agent can persist each reused component with `fx_design_link_component`: its Paper node ID, repository file/export, props, theme, state, and real rendered example. `/diff node:ARTBOARD_ID` then checks all linked instances in one design-wide overlay. Movement and layer names do not change the reference. Selecting an instance reveals its code/Paper pair inline. Unlinked regions and unavailable references remain explicitly unchecked, not matching. The preview must already render the declared props and state; linking metadata does not configure a story.
 
 Optional parameters: `--selector`, `--ready-selector`, `--width`, `--height`, `--session-storage`, and `--local-storage`. Quote selectors containing spaces and storage JSON, for example `--session-storage '{"owned":"true"}'`. Captures use an isolated browser's default state unless explicit storage is supplied; they do not inherit your open tab's state. fx hides the Next.js development overlay during capture.
 

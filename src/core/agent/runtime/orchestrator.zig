@@ -122,7 +122,7 @@ fn design_verification_attempted(messages: []const ChatMessage) bool {
         if (message.role != .tool) continue;
         const name = message.tool_name orelse continue;
         if (std.mem.eql(u8, name, "mcp_fx_design_verify")) return true;
-        if (design_mode.isPaperMutationTool(name) or std.mem.eql(u8, name, "mcp_fx_design_execute") or std.mem.eql(u8, name, "mcp_fx_design_prepare_import") or std.mem.eql(u8, name, "mcp_fx_design_prepare_edit")) return false;
+        if (design_mode.isPaperMutationTool(name) or std.mem.eql(u8, name, "mcp_fx_design_execute") or std.mem.eql(u8, name, "mcp_fx_design_prepare_design") or std.mem.eql(u8, name, "mcp_fx_design_prepare_import") or std.mem.eql(u8, name, "mcp_fx_design_prepare_edit")) return false;
     }
     return false;
 }
@@ -152,6 +152,9 @@ test "Design completion gate tracks the latest Paper mutation and strict verify"
     try std.testing.expect(!designFinalVerificationRequired("code", &.{mutation}));
     try std.testing.expect(design_verification_attempted(&.{ mutation, failed_verify }));
     try std.testing.expect(!design_verification_attempted(&.{ failed_verify, mutation }));
+    const composition = ChatMessage{ .role = .tool, .content = "prepared", .tool_name = "mcp_fx_design_prepare_design", .tool_result_status = .success };
+    try std.testing.expect(designFinalVerificationRequired(design_mode.id, &.{ clean_verify, composition }));
+    try std.testing.expect(!design_verification_attempted(&.{ clean_verify, composition }));
 }
 
 fn take_steering_boundary(

@@ -1,12 +1,13 @@
 /** fx's managed design adapter. Paper mutations are executed by fx, never here. */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, readdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, readdir, realpath, rm, stat } from "node:fs/promises";
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { brotliDecompressSync } from "node:zlib";
 import { Inspector, type VerificationSnapshot } from "./inspector";
 import { comparePixelBuffers, comparisonSensitivity } from "./comparison";
+import { InstanceRegistry, validateReference, localRect, renderComponentOverlay, type ComponentReference, type InstanceResult } from "./provenance";
 import { bindImportReceipt, normalizePropertyStyles, readBoundProperties, type SourceManifestEntry, type SourceBinding, type PropertyComparison } from "./property_diff";
 
 export const VERSION = 1;
@@ -64,6 +65,8 @@ export interface DesignNode {
   children: DesignNode[];
 }
 export interface DesignRecord {
+  component_backdrop?: string;
+  composition?: { html: string; references: string[] };
   capture_context?: { policy: number; state_label: string; state_fingerprint: string; ready_selector?: string };
   version: number;
   id: string;
@@ -281,7 +284,7 @@ export class PaperReader {
     if (!response.ok) throw new Error(`Paper initialization returned HTTP ${response.status}`);
   }
   async read(name: string, args: Json) {
-    if (!["get_selection", "get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
+    if (!["get_selection", "get_basic_info", "get_node_info", "get_children", "get_computed_styles", "get_jsx", "get_screenshot", "export", "get_tokens", "get_font_family_info"].includes(name)) throw new Error("Paper reader rejects mutations");
     const result = await this.rpc("tools/call", { name, arguments: args });
     if (result.isError) throw new Error(JSON.stringify(result.content));
     return result;
@@ -290,11 +293,26 @@ export class PaperReader {
     const args = { nodeId, ...(fileId ? { fileId } : {}) };
     const nodes = await this.read("get_node_info", args);
     const jsx = await this.read("get_jsx", args);
-    const screenshot = await this.read("get_screenshot", { ...args, scale: 1 });
-    const image = screenshot.content?.find((part: Json) => part.type === "image");
-    if (!image?.data) throw new Error("Paper screenshot is unavailable");
-    return { nodes, jsx, image: `data:${image.mimeType};base64,${image.data}` };
+    // get_screenshot is JPEG-only in Paper Desktop. Export the actual canvas,
+    // never re-encode that lossy screenshot and call it lossless evidence.
+    const exported = await this.read("export", { type: "image", nodes: { [nodeId]: [{ format: "png", scale: "1x" }] }, ...(fileId ? { fileId } : {}) });
+    const payload = exported.structuredContent ?? JSON.parse(exported.content?.find((part: Json) => part.type === "text")?.text ?? "{}");
+    const entry = payload.exports?.find((item: Json) => item.nodeId === nodeId);
+    const image = await readPaperPng(entry?.filePath);
+    return { nodes, jsx, image };
   }
+}
+
+export async function readPaperPng(filePath: unknown): Promise<string> {
+  if (typeof filePath !== "string" || !filePath.toLowerCase().endsWith(".png")) throw new Error("Paper did not provide a lossless PNG export");
+  let path = filePath.replace(/\\+/g, "/");
+  if (path.startsWith("//")) throw new Error("Remote Paper exports are not supported");
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME && /^[A-Za-z]:\//.test(path)) path = `/mnt/${path[0]!.toLowerCase()}${path.slice(2)}`;
+  if (!isAbsolute(path)) throw new Error("Paper export must be a local absolute path");
+  if ((await stat(path)).size > 32 * 1024 * 1024) throw new Error("Paper PNG exceeds the capture limit");
+  const bytes = await readFile(path);
+  if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Paper export is not PNG; recapture required");
+  return `data:image/png;base64,${bytes.toString("base64")}`;
 }
 
 function paperObject(result: Json): Json {
@@ -323,7 +341,7 @@ export async function validateEditTargets(record: DesignRecord, tool: string, ar
     }
   }
   const targets: string[] = [];
-  const scalarKeys = new Set(["nodeId", "parentId", "before", "after", "id"]);
+  const scalarKeys = new Set(["nodeId", "targetNodeId", "parentId", "before", "after", "id"]);
   function visit(value: unknown) {
     if (Array.isArray(value)) { for (const item of value) visit(item); return; }
     if (!value || typeof value !== "object") return;
@@ -359,7 +377,7 @@ export async function compareImages(source: string, canvas: string) {
       const width = Math.max(a.width, b.width), height = Math.max(a.height, b.height);
       if (width * height > 32000000) throw new Error('Image comparison exceeds pixel limit');
       const pixels = image => { const c = document.createElement('canvas'); c.width = width; c.height = height; const ctx = c.getContext('2d'); ctx.drawImage(image, 0, 0); return ctx.getImageData(0, 0, width, height).data; };
-      const {mask, ...comparison} = (${comparePixelBuffers.toString()})(pixels(a), pixels(b), ${comparisonSensitivity.pixel_channel_epsilon});
+      const {mask, ...comparison} = (${comparePixelBuffers.toString()})(pixels(a), pixels(b), ${comparisonSensitivity.pixel_channel_epsilon}, a.width);
       return { ...comparison, sensitivity: ${JSON.stringify(comparisonSensitivity)}, total_pixels: width * height, dimensions_match: a.width === b.width && a.height === b.height, match: comparison.different_pixels === 0 && a.width === b.width && a.height === b.height };
     })()`);
   } finally { await browser.call("close").catch(() => undefined); }
@@ -624,7 +642,9 @@ export async function captureConsistently(browser: Pick<Browser, "evaluate" | "c
 const tool = (name: string, description: string, properties: Json, required: string[] = [], readOnly = true) => ({ name, description, inputSchema: { type: "object", properties, required: required.filter(key => key !== "session_directory"), additionalProperties: false }, annotations: { readOnlyHint: readOnly } });
 const string = { type: "string", minLength: 1 };
 export const TOOLS = [
-  tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, use an existing workspace link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
+  tool("link_component", "Persist a Paper component instance's intended repository reference. Supply the actual component file/export, explicit props/theme/state, and a real rendered example URL with a unique selector and viewport. The preview must already render that exact intent; metadata does not configure it. Use an isolated container_selector for stretch sizing. Link each reused instance after creation. Links survive moves, renames and sessions; replace:true explicitly changes intent. Then call diff on the artboard for one unified overlay. Never infer a reference from an edited Paper appearance.", { session_directory: string, workspace: string, file_id: string, artboard_id: string, reference: { type: "object", properties: { node_id: string, component_file: string, export_name: string, props: { type: "object" }, theme: string, state: string, sizing: { enum: ["intrinsic", "stretch"] }, preview: { type: "object", properties: { url: string, selector: string, width: { type: "integer" }, height: { type: "integer" }, ready_selector: string, container_selector: string }, required: ["url", "selector", "width", "height"], additionalProperties: false } }, required: ["node_id", "component_file", "export_name", "props", "theme", "state", "sizing", "preview"], additionalProperties: false }, replace: { type: "boolean" } }, ["workspace", "file_id", "artboard_id", "reference"], false),
+  tool("prepare_design", "Start a NEW Paper composition or redesign from repository components, without importing or matching the old screen first. Read actual components, tokens and stories, then supply their repository-relative reference paths and grounded HTML. Execute pending operations normally. This records design intent, never import fidelity.", { session_directory: string, workspace: string, name: string, file_id: string, html: string, references: { type: "array", items: string, minItems: 1 }, width: { type: "integer", minimum: 1, maximum: 8192 }, height: { type: "integer", minimum: 1, maximum: 8192 } }, ["workspace", "name", "file_id", "html", "references", "width", "height"], false),
+  tool("diff", "Capture a live source page and compare with Paper without editing either. Target accepts [node:ID] [URL] [--selector CSS] [--ready-selector CSS] [--width N] [--height N] [--session-storage JSON] [--local-storage JSON]. Without a URL, compare all linked component instances in the selected artboard as one overlay; otherwise recapture its existing page link.", { session_directory: string, workspace: string, target: { type: "string" } }, ["session_directory"], false),
   tool("discover", "Discover source files, styles and assets. Supply workspace only; fx supplies the session directory.", { workspace: string, session_directory: string }, ["workspace", "session_directory"]),
   tool("capture_source", "Capture a consistent rendered page in an isolated browser. Does not inherit the user's tab state. Supply ready_selector for the intended settled state and explicit session_storage/local_storage string values when needed. Never guess ownership or authentication state.", { workspace: string, session_directory: string, url: string, selector: string, state_label: string, ready_selector: string, session_storage: { type: "object", additionalProperties: { type: "string" } }, local_storage: { type: "object", additionalProperties: { type: "string" } }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, ["workspace", "session_directory", "url", "selector"], false),
   tool("source_tree", "Read a bounded component outline. Follow next_offset for remaining nodes; exact assets and styles remain in the persisted capture used by import.", { session_directory: string, capture_id: string, offset: { type: "integer", minimum: 0 } }, ["session_directory", "capture_id"]),
@@ -637,12 +657,81 @@ export const TOOLS = [
   tool("compare", "Read the current Paper artboard and compare it against its baseline. Returns source search candidates and concurrent source edits; does not write code.", { session_directory: string, capture_id: string }, ["capture_id"]),
   tool("check", "Read Paper and check the current workflow phase. Design edits are differences, not import regressions.", { session_directory: string, capture_id: string, nodeId: string, fileId: string }, ["session_directory"]),
   tool("verify", "Verify an imported artboard against its source screenshot, or inspect intentional design changes. Never claims fidelity with unresolved findings.", { session_directory: string, capture_id: string }, ["session_directory", "capture_id"], false),
-  tool("prepare_edit", "Prepare an exact targeted Paper edit after a verified import. Existing source identity and baseline survive intentional changes.", { session_directory: string, capture_id: string, paper_tool: string, arguments: { type: "object" } }, ["session_directory", "capture_id", "paper_tool", "arguments"], false),
+  tool("prepare_edit", "Prepare an exact targeted edit in a new composition or verified import. Compositions also support write_html within their artboard. Existing source identity and baseline survive intentional changes.", { session_directory: string, capture_id: string, paper_tool: string, arguments: { type: "object" } }, ["session_directory", "capture_id", "paper_tool", "arguments"], false),
 ];
 
 export class Adapter {
   constructor(readonly inspector = new Inspector()) {}
   async close() { await this.inspector.close(); }
+  private registry(directory: string, workspace: string, file: string, artboard: string) {
+    return new InstanceRegistry(join(dirname(dirname(directory)), "design-provenance"), workspace, file, artboard);
+  }
+  private async componentTree(paper: PaperReader, file: string, artboard: string) {
+    const nodes = new Map<string, Json>(), pending = [artboard];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (nodes.has(id)) throw Error("Invalid Paper hierarchy");
+      if (nodes.size >= 2000) throw Error("Component design exceeds 2000 layers");
+      const node = paperObject(await paper.read("get_node_info", { nodeId: id, fileId: file }));
+      if (node.id !== id || !Array.isArray(node.childIds)) throw Error("Paper hierarchy unavailable");
+      nodes.set(id, node);
+      pending.push(...node.childIds);
+    }
+    return nodes;
+  }
+  async componentDiff(store: Store, args: Json, file: string, artboard: string, links: ComponentReference[]) {
+    const source = await inventory(args.workspace), paper = new PaperReader();
+    await paper.initialize();
+    const before = await paper.snapshot(artboard, file), nodes = await this.componentTree(paper, file, artboard), board = nodes.get(artboard)!;
+    const results: InstanceResult[] = [], linked = new Set(links.map(link => link.node_id));
+    const descendants = (id: string): string[] => (nodes.get(id)?.childIds ?? []).flatMap((child: string) => [child, ...descendants(child)]);
+    const covered = new Set(links.flatMap(link => [link.node_id, ...descendants(link.node_id)]));
+    const cache = new Map<string, { image: string; backdrop: string; size: { width: number; height: number } }>();
+    for (const link of links) {
+      const result: InstanceResult = { node_id: link.node_id, label: link.export_name, status: "unavailable", reference: link };
+      results.push(result);
+      try {
+        validateReference(link, source.files);
+        const node = nodes.get(link.node_id);
+        if (!node || node.isVisible === false) throw Error("Instance missing or hidden");
+        result.rect = localRect(node, board);
+        if (descendants(link.node_id).some(id => linked.has(id))) throw Error("Nested linked instances: check this container separately");
+        const { node_id: _, ...intent } = link;
+        const referenceKey = digest({ intent, revision: source.revision, width: link.sizing === "stretch" ? node.width : null });
+        let reference = cache.get(referenceKey);
+        if (!reference) {
+          const captured = await this.call("capture_source", { session_directory: args.session_directory, workspace: source.root, ...link.preview,
+            component_container: link.sizing === "stretch" ? { selector: link.preview.container_selector, width: node.width } : undefined,
+            component_reference: true });
+          const record = await store.load(captured.capture_id);
+          reference = { image: `data:image/png;base64,${(await readFile(record.screenshot)).toString("base64")}`, backdrop: record.component_backdrop!, size: { width: record.root.rect.width, height: record.root.rect.height } };
+          cache.set(referenceKey, reference);
+        }
+        result.reference_image = reference.image; result.backdrop = reference.backdrop; result.reference_size = reference.size;
+      } catch (error) { result.message = (error as Error).message; }
+    }
+    // Uncovered leaves are regions, not a guessed count of code components.
+    for (const [id, node] of nodes) if (id !== artboard && !covered.has(id) && !node.childIds.length && node.isVisible !== false) {
+      results.push({ node_id: id, label: node.name || "Unlinked region", status: "unlinked", rect: localRect(node, board) });
+    }
+    const browser = new Browser(`fx-design-components-${randomUUID()}`);
+    let rendered;
+    try {
+      const inputs = JSON.stringify(results);
+      if (inputs.length + before.image.length > 32 * 1024 * 1024) throw Error("Component report exceeds 32 MB of image evidence");
+      await browser.call("open", "about:blank");
+      rendered = await browser.evaluate(`(${renderComponentOverlay.toString()})(${JSON.stringify(before.image)},${inputs},${comparePixelBuffers.toString()},${JSON.stringify({ width: board.width, height: board.height })})`);
+    } finally { await browser.call("close").catch(() => undefined); }
+    if (digest(await paper.snapshot(artboard, file)) !== digest(before) || (await inventory(source.root)).revision !== source.revision) return { status: "blocked", message: "Design or code changed during comparison. Run /diff again." };
+    const report = { ...rendered, linked: links.length, checked: rendered.instances.filter((item: InstanceResult) => ["consistent", "drift"].includes(item.status)).length,
+      unlinked_regions: rendered.instances.filter((item: InstanceResult) => item.status === "unlinked").length, source_revision: source.revision };
+    const record: DesignRecord = { version: VERSION, id: randomUUID(), workspace: source.root, source_revision: source.revision, source_files: source.files,
+      url: "components:" + artboard, selector: "", viewport: { width: board.width, height: board.height }, screenshot: "", phase: "design", file_id: file, artboard_id: artboard,
+      root: { key: "0", name: board.name, tag: "div", text: "", styles: {}, bindings: {}, children: [], rect: { x: 0, y: 0, width: board.width, height: board.height } }, findings: [], operations: [] };
+    const state = report.instances.some((item: InstanceResult) => item.status !== "consistent") ? "needs-repair" : "verified";
+    const viewer = await this.publish(store, record, state, "Component comparison", { canvas_image: before.image, component_report: report });
+    return viewer.unavailable ? { status: "blocked", message: "Viewer unavailable." } : { status: "ready", url: viewer.url };
+  }
   async freshDiff(store: Store, args: Json, parameters: Json, previous?: DesignRecord) {
     const paper = new PaperReader();
     await paper.initialize();
@@ -707,11 +796,57 @@ export class Adapter {
     const directory = resolve(args.session_directory);
     if (!isAbsolute(args.session_directory)) throw new Error("Session directory must be absolute");
     const store = new Store(join(directory, "design"));
+    if (name === "link_component") {
+      const source = await inventory(args.workspace);
+      validateReference(args.reference, source.files);
+      const paper = new PaperReader(); await paper.initialize();
+      const nodes = await this.componentTree(paper, args.file_id, args.artboard_id);
+      if (!nodes.has(args.reference.node_id)) throw Error("Instance is outside the specified artboard");
+      await this.registry(directory, source.root, args.file_id, args.artboard_id).link(args.reference, args.replace === true);
+      return { status: "linked", node_id: args.reference.node_id, artboard_id: args.artboard_id };
+    }
+    if (name === "prepare_design") {
+      if (typeof args.name !== "string" || !args.name.trim() || typeof args.file_id !== "string" || !args.file_id.trim()) throw new Error("Provide a design name and Paper file ID");
+      const source = await inventory(args.workspace);
+      if (!Array.isArray(args.references) || !args.references.length || args.references.some((file: unknown) => typeof file !== "string" || !Object.hasOwn(source.files, file))) throw new Error("Design references must name existing inventoried repository files");
+      if (![args.width, args.height].every(value => Number.isInteger(value) && value > 0 && value <= 8192) || args.width * args.height > 32000000) throw new Error("Invalid design dimensions");
+      if (typeof args.html !== "string" || !args.html.trim() || args.html.length > 4 * 1024 * 1024) throw new Error("Provide bounded component-grounded HTML");
+      const id = digest({ workspace: source.root, revision: source.revision, name: args.name, file: args.file_id, html: args.html, references: args.references, width: args.width, height: args.height });
+      const existing = (await store.list()).find(record => record.id === id);
+      if (existing) return { version: VERSION, status: "prepared", capture_id: id, operations: existing.operations, artboard_id: existing.artboard_id, fidelity_claim: false };
+      const operation = { tool: "mcp_paper_create_artboard", arguments: { name: args.name, fileId: args.file_id, styles: { width: `${args.width}px`, height: `${args.height}px` } } };
+      const record: DesignRecord = {
+        version: VERSION, id, workspace: source.root, source_revision: source.revision, source_files: source.files,
+        url: "about:blank", selector: "", viewport: { width: args.width, height: args.height },
+        root: { key: "0", name: args.name, tag: "div", text: "", styles: {}, bindings: {}, children: [], rect: { x: 0, y: 0, width: args.width, height: args.height } },
+        screenshot: "", findings: [], phase: "design", file_id: args.file_id,
+        composition: { html: args.html, references: args.references },
+        operations: [{ ...operation, hash: digest(operation), status: "pending" }],
+      };
+      await store.save(record);
+      return { version: VERSION, status: "prepared", capture_id: id, operations: record.operations, fidelity_claim: false };
+    }
     if (name === "diff") {
       let parameters: Json;
       try { parameters = parseDiffParameters(String(args.target ?? "")); }
       catch (error) { return { status: "blocked", message: (error as Error).message }; }
       if (parameters.url) return this.freshDiff(store, args, parameters);
+      if (args.workspace && (!parameters.target || parameters.target.startsWith("node:"))) {
+        const paper = new PaperReader(); await paper.initialize();
+        const info = paperObject(await paper.read("get_basic_info", {}));
+        const file = typeof info.url === "string" ? new URL(info.url).pathname.split("/")[2] : undefined;
+        let node = parameters.target.slice(5);
+        if (!node) {
+          const selection = paperObject(await paper.read("get_selection", file ? { fileId: file } : {}));
+          if (selection.selectedNodes?.length === 1) node = selection.selectedNodes[0].id;
+        }
+        if (file && node) {
+          const info = paperObject(await paper.read("get_node_info", { nodeId: node, fileId: file }));
+          const artboard = info.artboardId ?? node;
+          const links = await this.registry(directory, await realpath(args.workspace), file, artboard).list();
+          if (links.length) return this.componentDiff(store, args, file, artboard, links);
+        }
+      }
       const stores = [store];
       const workspace = args.workspace ? await realpath(args.workspace) : undefined;
       // Session directories are host-bound. Search only sibling sessions in this profile,
@@ -750,6 +885,11 @@ export class Adapter {
       if (!records.length) return { status: "blocked", message: "Supply a source: /diff node:ID http://localhost:3000/path" };
       if (records.length !== 1) return { status: "blocked", message: "Choose a capture: " + records.map(record => `/diff capture:${record.id}`).join(" · ") };
       const record = records[0];
+      if (record.file_id && record.artboard_id) {
+        const links = await this.registry(directory, record.workspace, record.file_id, record.artboard_id).list();
+        if (links.length) return this.componentDiff(store, { ...args, workspace: record.workspace }, record.file_id, record.artboard_id, links);
+      }
+      if (record.composition || record.url.startsWith("components:")) return { status: "blocked", message: "Link the design's component instances before comparing." };
       return this.freshDiff(store, args, parameters, record);
     }
     if (name === "discover") {
@@ -786,6 +926,26 @@ export class Adapter {
           throw new Error('Intended capture state did not become ready');
         })()`);
         const temporary_screenshot = join(store.directory, `${id}.capture.png`);
+        let component_backdrop: string | undefined;
+        if (args.component_reference) component_backdrop = await browser.evaluate(`(() => {
+          const roots = document.querySelectorAll(${JSON.stringify(args.selector)});
+          if (roots.length !== 1) throw Error('Select one rendered component');
+          const root = roots[0], container = ${JSON.stringify(args.component_container ?? null)};
+          if (container) {
+            const parents = document.querySelectorAll(container.selector);
+            if (parents.length !== 1 || parents[0] === root || !parents[0].contains(root)) throw Error('Select the isolated reference container');
+            parents[0].style.width = container.width + 'px'; parents[0].style.boxSizing = 'content-box';
+          }
+          for (let parent = root.parentElement; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            if (style.backgroundImage !== 'none') throw Error('Reference requires a solid isolated backdrop');
+            const color = style.backgroundColor;
+            if (color === 'rgba(0, 0, 0, 0)' || color === 'transparent') continue;
+            if (color.startsWith('rgba(')) throw Error('Reference backdrop is translucent');
+            return color;
+          }
+          return 'rgb(255, 255, 255)';
+        })()`);
         const snapshot = await captureConsistently(browser, args.selector, temporary_screenshot);
         if (args.ready_selector && !await browser.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(args.ready_selector)}); return !!(node && node.getBoundingClientRect().width && node.getBoundingClientRect().height); })()`)) throw new Error("Intended capture state changed during capture");
         const capture_context = { policy: 3, state_label: args.state_label ?? (args.session_storage || args.local_storage ? "explicit prepared state" : "isolated default state"), state_fingerprint: digest({ session: args.session_storage ?? {}, local: args.local_storage ?? {} }), ready_selector: args.ready_selector };
@@ -811,7 +971,7 @@ export class Adapter {
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const screenshot = join(store.directory, `${capture_id}.png`);
         await rename(temporary_screenshot, screenshot);
-        const record: DesignRecord = { version: VERSION, id: capture_id, workspace: source.root, source_revision: source.revision, source_files: source.files, source_index: await sourceIndex(source.root, source.files), url: url.href, selector: args.selector, viewport, root: snapshot.root, screenshot, findings: snapshot.findings, phase: "import", operations: [] };
+        const record: DesignRecord = { version: VERSION, id: capture_id, workspace: source.root, source_revision: source.revision, source_files: source.files, source_index: await sourceIndex(source.root, source.files), url: url.href, selector: args.selector, viewport, root: snapshot.root, screenshot, findings: snapshot.findings, phase: "import", operations: [], component_backdrop };
         record.font_evidence = font_evidence;
         record.capture_context = capture_context;
         await store.save(record);
@@ -828,7 +988,7 @@ export class Adapter {
         if (record.phase === "import" && record.capture_context?.policy !== 3) throw new Error("Capture predates state-consistency checks; recapture before importing");
         const source = await inventory(record.workspace);
         if (source.revision !== record.source_revision) throw new Error("Source changed since capture; recapture before importing");
-        if (record.phase === "design") {
+        if (record.phase === "design" && !(record.composition && !record.artboard_id && operation.tool === "mcp_paper_create_artboard")) {
           const paper = new PaperReader();
           await paper.initialize();
           await validateEditTargets(record, operation.tool, operation.arguments, paper);
@@ -877,12 +1037,13 @@ export class Adapter {
       const outstanding = async () => (await store.list()).filter(item => item.operations.some(operation => operation.status !== "applied") || item.operations.filter(operation => operation.status === "applied").length > (item.verified_operations ?? 0)).length;
       if (record.phase === "design") {
         {
+          record.baseline ??= { nodes: canvas.nodes, jsx: canvas.jsx };
           record.verified_operations = record.operations.filter(operation => operation.status === "applied").length;
           record.canvas_revision = canvas_revision;
           await store.save(record);
         }
         const inspector = await this.publish(store, record, "verified", "Intentional design changes recorded. This is not an import-fidelity claim and no code was changed.", { canvas_image: canvas.image, canvas_revision });
-        return { version: VERSION, status: "clean", phase: "design", capture_id: record.id, artboard_id: record.artboard_id, source_revision: record.source_revision, canvas_revision, pending_verifications: await outstanding(), inspector, changes: changes(record.baseline, { nodes: canvas.nodes, jsx: canvas.jsx }), fidelity_claim: false };
+        return { version: VERSION, status: "clean", phase: "design", capture_id: record.id, artboard_id: record.artboard_id, source_revision: record.source_revision, canvas_revision, pending_verifications: await outstanding(), inspector, changes: changes(record.baseline, { nodes: canvas.nodes, jsx: canvas.jsx }), findings: record.findings, fidelity_claim: false };
       }
       const source = await inventory(record.workspace);
       if (source.revision !== record.source_revision) throw new Error("Source changed since capture");
@@ -914,8 +1075,8 @@ export class Adapter {
       }
     }
     if (name === "prepare_edit") {
-      if (record.phase !== "design" || !record.baseline) throw new Error("Verify the initial import before editing its design");
-      if (!["mcp_paper_update_styles", "mcp_paper_set_text_content", "mcp_paper_rename_nodes", "mcp_paper_move_nodes", "mcp_paper_duplicate_nodes", "mcp_paper_delete_nodes"].includes(args.paper_tool)) throw new Error("Unsupported design edit; existing vector assets must be reused");
+      if (record.phase !== "design" || (!record.baseline && !record.composition)) throw new Error("Verify the initial import before editing it; for a new composition use prepare_design instead");
+      if (!["mcp_paper_update_styles", "mcp_paper_set_text_content", "mcp_paper_rename_nodes", "mcp_paper_move_nodes", "mcp_paper_duplicate_nodes", "mcp_paper_delete_nodes", ...(record.composition ? ["mcp_paper_write_html"] : [])].includes(args.paper_tool)) throw new Error("Unsupported design edit; existing vector assets must be reused");
       const paper = new PaperReader();
       await paper.initialize();
       await validateEditTargets(record, args.paper_tool, args.arguments, paper);
@@ -981,13 +1142,23 @@ export class Adapter {
       if (operation.status !== "started") throw new Error("Operation was not admitted by fx");
       const result = JSON.parse(args.result_json);
       if (!result || typeof result !== "object" || result.isError || result.error) throw new Error("Paper did not return a successful structured result");
-      const hasFailure = (value: any): boolean => Boolean(value && typeof value === "object" && (value.result === "error" || value.error || (Array.isArray(value.ignoredStyles) && value.ignoredStyles.length) || Object.values(value).some(item => item && typeof item === "object" && hasFailure(item))));
-      if (hasFailure(result)) throw new Error("Paper reported a partial or ignored operation; reconcile before continuing");
+      const hasFailure = (value: any): boolean => Boolean(value && typeof value === "object" && (value.result === "error" || value.error || Object.values(value).some(item => item && typeof item === "object" && hasFailure(item))));
+      if (hasFailure(result)) throw new Error("Paper reported a failed operation; reconcile before continuing");
+      // An ignored style is a finding on an applied write, not permission to replay it.
+      // Import verification remains strict because these findings prevent a fidelity claim.
+      const collectIgnored = (value: any) => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value.ignoredStyles)) for (const property of value.ignoredStyles) {
+          record.findings.push({ kind: "paper-style-ignored", nodeId: value.nodeId, property: String(property), operation_hash: operation.hash });
+        }
+        for (const child of Object.values(value)) if (child && typeof child === "object") collectIgnored(child);
+      };
+      collectIgnored(result);
       if (operation.tool === "mcp_paper_create_artboard") {
         const nodeId = result.nodeId ?? result.id;
         if (typeof nodeId !== "string" || !nodeId) throw new Error("Paper result requires its artboard node ID");
         record.artboard_id = nodeId;
-        const serialized = serialize(record.root, record.token_bindings, record.id);
+        const serialized = record.composition ? { html: record.composition.html, manifest: undefined } : serialize(record.root, record.token_bindings, record.id);
         record.source_manifest = serialized.manifest;
         const next = { tool: "mcp_paper_write_html", arguments: { targetNodeId: nodeId, mode: "insert-children", html: serialized.html, ...(record.file_id ? { fileId: record.file_id } : {}) } };
         record.operations.push({ ...next, hash: digest(next), status: "pending" });

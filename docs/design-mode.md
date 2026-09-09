@@ -5,6 +5,39 @@ codebase → editable Paper design → verified codebase workflow.
 
 ## Implemented foundation
 
+- Component provenance is stored under profile `design-provenance/`, keyed by
+  workspace, Paper file, artboard and node ID. `link_component` records intended
+  component file/export, props, theme, state and rendered preview. Changing intent
+  requires explicit `replace: true`; moving or renaming a layer does not rebind it.
+  `/diff node:ARTBOARD_ID` and a selected linked instance use the same unified
+  component path across sessions. Explicit URL comparisons remain page comparisons.
+- Component references are captured fresh through the existing source renderer.
+  The supplied example must already implement the declared props/theme/state;
+  these fields are provenance, not executable Storybook controls or compiler proof
+  that an arbitrary URL imports the declared file. The adapter validates file
+  existence and Paper membership, never guesses component identity by appearance.
+  Intrinsic references keep their natural size. Stretch references require an
+  isolated ancestor container; only its width is set to the design's constraint.
+  Reference pixels are never resized to conceal size drift.
+- One PNG overlay projects node-local pixel differences onto the Paper design.
+  Instances are cropped from the single full-artboard PNG, not exported in
+  isolation, because Paper node exports can lose ancestor layout and clip text.
+  Layout placement is not compared to an old page. References use a solid
+  backdrop shared with the Paper export for transparency. Non-solid backdrops,
+  unavailable previews, missing/hidden nodes, and nested linked containers are
+  not checked. Nested child instances can still be checked independently.
+  Uncovered visible leaf layers are listed as unlinked regions, not a guessed
+  component count. External duplicates do not inherit links automatically.
+  Source or canvas changes during a comparison reject mixed-time evidence.
+  Current limits are 100 links, 2000 layers and 32 million pixels per image.
+
+- New compositions use `prepare_design` with HTML grounded in existing repository
+  files, a Paper file ID, and dimensions. Prepared writes still require host
+  admission and are scoped to the new artboard. Unlike faithful imports, a
+  redesign does not need to match the old screen first. Its checkpoint records
+  intentional changes, not proof of component fidelity; use component visual
+  diffs against rendered examples to evaluate that separately.
+
 - Design-mode entry materializes a bundled, content-addressed helper and registers
   `fx_design` alongside the existing Paper MCP. A stable launcher selects the
   helper version bundled with the binary. Existing named configurations are not
@@ -48,13 +81,18 @@ codebase → editable Paper design → verified codebase workflow.
   similarity. Missing/ambiguous bindings remain unverified. SVG nodes are not yet
   covered by this property mapping. Equivalent CSS colors are compared after
   browser normalization; these scoped checks do not replace screenshot verification.
-  Balanced sensitivity ignores dimension rounding up to 1/32 CSS px and pixel
-  channel differences up to 16/255. Border presence and border-width checks remain
+  Lossless comparison ignores dimension rounding up to 1/32 CSS px but preserves
+  every pixel-channel difference. Border presence and border-width checks remain
   independent, so a missing 1px border still fails. There is no whole-image area
   allowance: even one above-threshold pixel remains a visual difference. The host
   gate and inspector use the same pixel comparator. Checkpoints retain the policy,
   raw difference count and ignored noise count; older checkpoints without a policy
-  retain strict rendering until checked again.
+  use the current preview tolerance until checked again; stored results are unchanged.
+  Anti-alias suppression is disabled: intermediate glyph shades and faint edges
+  remain evidence. Earlier stored results are historical and require a new diff
+  to obtain lossless-policy metrics.
+  Paper captures use PNG image exports rather than JPEG screenshots. Failed PNG
+  exports fail explicitly instead of silently falling back to compressed evidence.
   A verified import records a baseline and enters the design phase, where
   intentional edits are reported as changes. Layer names are not source IDs.
 - The host checkpoints every recorded managed mutation against its admitted
@@ -75,7 +113,13 @@ codebase → editable Paper design → verified codebase workflow.
   across all three views. Escape or Close restores focus and the selected finding.
   Zoom uses the stored capture resolution and does not manufacture image detail.
 - The inspector separates source findings from approximate directional pixel
-  residuals. Red and green pixels are not claims of confirmed semantic removals
+  residuals. Detail is the default: pixel-level, near-opaque color preserves text
+  shapes without blurring the overlay. Regions is optional
+  and follows differences with fine 2px tiles and smoothed overlay
+  edges, leaving hollow interiors clear rather than filling bounding boxes.
+  Pixels reveals the comparison mask. Amber denotes mixed residuals, not a
+  confirmed semantic move. Grouping changes presentation, never verification
+  results. Red and green pixels are not claims of confirmed semantic removals
   or additions. Selecting a located source finding focuses its measured region.
   Token-binding warnings, unverified mappings and technical provenance are tucked
   into collapsed Details, keeping the default view focused on the images.
@@ -185,3 +229,9 @@ the actual desktop connection without modifying the canvas.
 Passing these checks is not a shipping decision. Full CI and the ship gate must
 pass on the exact commit, and the complete workflow must be exercised with the
 freshly built binary before it is described as ready.
+
+Managed execution resolves the target Paper tool's current definition separately
+from the wrapper's definition, while retaining schema, permission, and access
+checks. If the helper blocks an operation, its diagnostic is returned to the
+agent. A started operation without a recorded result still requires reconciliation;
+do not repeat the Paper write merely because the previous session exited.
