@@ -81,7 +81,7 @@ codebase → editable Paper design → verified codebase workflow.
   Zoom uses the stored capture resolution and does not manufacture image detail.
 - The inspector separates source findings from approximate directional pixel
   residuals. Detail is the default: pixel-level, near-opaque color preserves text
-  shapes with a quarter-pixel softening on the overlay alone. Regions is optional
+  shapes without blurring the overlay. Regions is optional
   and follows differences with fine 2px tiles and smoothed overlay
   edges, leaving hollow interiors clear rather than filling bounding boxes.
   Pixels reveals the comparison mask. Amber denotes mixed residuals, not a

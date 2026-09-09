@@ -19,6 +19,7 @@ test("inspector renders actual snapshots, focuses findings and fits narrow viewp
     await browser.call("open", view.url);
     await browser.evaluate(`new Promise((resolve,reject)=>{let attempts=0;const timer=setInterval(()=>{if(document.querySelector('#source').width===240){clearInterval(timer);resolve(true)}else if(++attempts>100){clearInterval(timer);reject(Error('Preview did not load'))}},50)})`);
     expect(await browser.evaluate(`document.querySelector('#overlay-mode').value`)).toBe("detail");
+    expect(await browser.evaluate(`(()=>{const ctx=document.querySelector('#diff').getContext('2d'),filters=[];Object.defineProperty(ctx,'filter',{configurable:true,set(value){filters.push(value)},get(){return 'none'}});document.querySelector('#overlay-mode').dispatchEvent(new Event('change'));delete ctx.filter;return filters})()`)).toEqual(["none"]);
     // Strong ink, but no tile expansion into the hollow border's interior.
     expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(16,15,1,1).data[1]`)).toBeLessThan(110);
     expect(await browser.evaluate(`document.querySelector('#diff').getContext('2d').getImageData(16,17,1,1).data[1]`)).toBeGreaterThan(245);
